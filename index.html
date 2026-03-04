@@ -1,0 +1,111 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kids Reading Tracker</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>Kids Reading Tracker</h1>
+    <p>Track finished books for Isa and Josh.</p>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h2>Add Finished Book</h2>
+      <form id="book-form" class="book-form">
+        <div class="field">
+          <label for="kid">Kid</label>
+          <select id="kid" name="kid" required>
+            <option value="Isa">Isa</option>
+            <option value="Josh">Josh</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="title">Title *</label>
+          <input id="title" name="title" type="text" required>
+        </div>
+
+        <div class="field">
+          <label for="author">Author</label>
+          <input id="author" name="author" type="text">
+        </div>
+
+        <div class="field">
+          <label for="dateFinished">Date Finished</label>
+          <input id="dateFinished" name="dateFinished" type="date" required>
+        </div>
+
+        <div class="field">
+          <label for="rating">Rating (1-5)</label>
+          <input id="rating" name="rating" type="number" min="1" max="5" step="1">
+        </div>
+
+        <div class="field full-width">
+          <label for="notes">Notes</label>
+          <textarea id="notes" name="notes" rows="3"></textarea>
+        </div>
+
+        <div class="actions full-width">
+          <button type="submit" id="submit-btn">Add Book</button>
+          <button type="button" id="cancel-edit-btn" class="secondary hidden">Cancel Edit</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Books</h2>
+      <div class="tabs" role="tablist" aria-label="Kid tabs">
+        <button class="tab active" data-tab="Isa" role="tab" aria-selected="true">Isa</button>
+        <button class="tab" data-tab="Josh" role="tab" aria-selected="false">Josh</button>
+        <button class="tab" data-tab="All" role="tab" aria-selected="false">All</button>
+      </div>
+
+      <div class="filters" aria-label="Book filters">
+        <div class="field">
+          <label for="searchFilter">Search</label>
+          <input id="searchFilter" type="search" placeholder="Title, author, notes">
+        </div>
+        <div class="field">
+          <label for="yearFilter">Year</label>
+          <select id="yearFilter">
+            <option value="All">All</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="ratingFilter">Rating</label>
+          <select id="ratingFilter">
+            <option value="All">All</option>
+            <option value="5">5</option>
+            <option value="4+">4+</option>
+            <option value="3+">3+</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="data-tools" aria-label="Data tools">
+        <button type="button" id="export-btn">Export JSON</button>
+        <button type="button" id="import-btn" class="secondary">Import JSON</button>
+        <input id="import-file" type="file" accept="application/json,.json" class="hidden" aria-hidden="true">
+      </div>
+
+      <p id="data-message" class="data-message hidden" role="status" aria-live="polite"></p>
+
+      <div class="stats" id="stats"></div>
+      <section class="chart-block" aria-label="Last six months finished books chart">
+        <h3 class="chart-title">Last 6 Months Finished</h3>
+        <div id="month-chart" class="month-chart" role="img" aria-label="Books finished in the last six months"></div>
+      </section>
+      <ul id="book-list" class="book-list" aria-live="polite"></ul>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
+
+
+
