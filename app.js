@@ -3,10 +3,13 @@
 
   var STORAGE_KEY = "kidsReadingTracker.v1";
   var KIDS_KEY = "kidsReadingTracker.kids.v1";
+  var VIEW_KEY = "kidsReadingTracker.view";
   var BASE_KIDS = ["Isa", "Josh"];
 
   var activeTab = "Isa";
   var editingId = null;
+  var activeView = "list";
+  var modalBookId = null;
 
   var filterState = {
     search: "",
@@ -21,19 +24,35 @@
   var dateInput = document.getElementById("dateFinished");
   var ratingInput = document.getElementById("rating");
   var notesInput = document.getElementById("notes");
+
   var searchFilterInput = document.getElementById("searchFilter");
   var yearFilterInput = document.getElementById("yearFilter");
   var ratingFilterInput = document.getElementById("ratingFilter");
+
+  var viewButtons = Array.prototype.slice.call(document.querySelectorAll(".view-btn"));
+
   var exportBtn = document.getElementById("export-btn");
   var importBtn = document.getElementById("import-btn");
   var importFileInput = document.getElementById("import-file");
   var dataMessageEl = document.getElementById("data-message");
+
   var listEl = document.getElementById("book-list");
+  var shelfEl = document.getElementById("bookshelf-grid");
   var statsEl = document.getElementById("stats");
   var monthChartEl = document.getElementById("month-chart");
+
   var submitBtn = document.getElementById("submit-btn");
   var cancelEditBtn = document.getElementById("cancel-edit-btn");
   var tabButtons = Array.prototype.slice.call(document.querySelectorAll(".tab"));
+
+  var modalEl = document.getElementById("book-modal");
+  var modalCloseBtn = document.getElementById("modal-close");
+  var modalTitleEl = document.getElementById("modal-title");
+  var modalMetaEl = document.getElementById("modal-meta");
+  var modalRatingEl = document.getElementById("modal-rating");
+  var modalNotesEl = document.getElementById("modal-notes");
+  var modalEditBtn = document.getElementById("modal-edit");
+  var modalDeleteBtn = document.getElementById("modal-delete");
 
   function todayIso() {
     var now = new Date();
@@ -166,6 +185,18 @@
       return book.kid;
     });
     saveKids(existingKids.concat(kidsFromBooks));
+  }
+
+  function loadViewPreference() {
+    var raw = localStorage.getItem(VIEW_KEY);
+    if (raw === "shelf" || raw === "list") {
+      return raw;
+    }
+    return "list";
+  }
+
+  function saveViewPreference(view) {
+    localStorage.setItem(VIEW_KEY, view);
   }
 
   function updateKidSelectOptions(kids) {
@@ -338,20 +369,6 @@
     return filterState.search !== "" || filterState.year !== "All" || filterState.rating !== "All";
   }
 
-  function showDataMessage(message, isError) {
-    dataMessageEl.textContent = message;
-    dataMessageEl.classList.remove("hidden", "error");
-    if (isError) {
-      dataMessageEl.classList.add("error");
-    }
-  }
-
-  function clearDataMessage() {
-    dataMessageEl.textContent = "";
-    dataMessageEl.classList.add("hidden");
-    dataMessageEl.classList.remove("error");
-  }
-
   function getLastSixMonths() {
     var labels = [];
     var base = new Date();
@@ -426,30 +443,57 @@
     });
   }
 
-  function render() {
-    var books = loadBooks();
-    books.sort(sortByDateDesc);
-
-    updateKidSelectOptions(loadKids());
-
-    var tabBooks = filteredBooks(books, activeTab);
-    populateYearFilterOptions(tabBooks);
-    renderMonthChart(tabBooks);
-
-    var visible = applyCombinedFilters(tabBooks);
-    statsEl.textContent = "Total books: " + visible.length + " | Books this year: " + booksThisYear(visible);
-
-    listEl.innerHTML = "";
-
-    if (visible.length === 0) {
-      var empty = document.createElement("li");
-      empty.className = "empty";
-      empty.textContent = emptyMessageForTab(activeTab, isAnyFilterActive());
-      listEl.appendChild(empty);
-      return;
+  function titleInitials(title) {
+    var parts = String(title || "").trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) {
+      return "BK";
     }
+    if (parts.length === 1) {
+      return parts[0].slice(0, 2).toUpperCase();
+    }
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
 
-    visible.forEach(function (book) {
+  function coverHue(id, title) {
+    var seed = String(id || "") + "|" + String(title || "");
+    var hash = 0;
+    var i;
+    for (i = 0; i < seed.length; i += 1) {
+      hash = (hash * 31 + seed.charCodeAt(i)) % 360;
+    }
+    return String((hash + 360) % 360);
+  }
+
+  function showDataMessage(message, isError) {
+    dataMessageEl.textContent = message;
+    dataMessageEl.classList.remove("hidden", "error");
+    if (isError) {
+      dataMessageEl.classList.add("error");
+    }
+  }
+
+  function clearDataMessage() {
+    dataMessageEl.textContent = "";
+    dataMessageEl.classList.add("hidden");
+    dataMessageEl.classList.remove("error");
+  }
+
+  function renderEmptyState(message) {
+    if (activeView === "list") {
+      var emptyList = document.createElement("li");
+      emptyList.className = "empty";
+      emptyList.textContent = message;
+      listEl.appendChild(emptyList);
+    } else {
+      var emptyShelf = document.createElement("div");
+      emptyShelf.className = "empty";
+      emptyShelf.textContent = message;
+      shelfEl.appendChild(emptyShelf);
+    }
+  }
+
+  function renderList(books) {
+    books.forEach(function (book) {
       var item = document.createElement("li");
       item.className = "book-item";
 
@@ -531,6 +575,124 @@
     });
   }
 
+  function openBookModal(book) {
+    modalBookId = book.id;
+    modalTitleEl.textContent = book.title;
+
+    var authorPart = book.author ? " by " + book.author : "";
+    modalMetaEl.textContent = book.kid + authorPart + " | Finished: " + formatDate(book.dateFinished);
+
+    if (book.rating) {
+      modalRatingEl.classList.remove("hidden");
+      modalRatingEl.textContent = ratingStars(book.rating) + " (" + book.rating + "/5)";
+    } else {
+      modalRatingEl.classList.add("hidden");
+      modalRatingEl.textContent = "";
+    }
+
+    if (book.notes) {
+      modalNotesEl.classList.remove("hidden");
+      modalNotesEl.textContent = book.notes;
+    } else {
+      modalNotesEl.classList.add("hidden");
+      modalNotesEl.textContent = "";
+    }
+
+    modalEl.classList.remove("hidden");
+    modalCloseBtn.focus();
+  }
+
+  function closeBookModal() {
+    modalBookId = null;
+    modalEl.classList.add("hidden");
+  }
+
+  function renderShelf(books) {
+    books.forEach(function (book) {
+      var card = document.createElement("button");
+      card.type = "button";
+      card.className = "shelf-card";
+      card.setAttribute("aria-label", "Open details for " + book.title);
+
+      var cover = document.createElement("div");
+      cover.className = "cover";
+      cover.style.setProperty("--cover-hue", coverHue(book.id, book.title));
+
+      var initials = document.createElement("span");
+      initials.className = "cover-initials";
+      initials.textContent = titleInitials(book.title);
+      cover.appendChild(initials);
+
+      var title = document.createElement("p");
+      title.className = "shelf-title";
+      title.textContent = book.title;
+
+      var author = document.createElement("p");
+      author.className = "shelf-author";
+      author.textContent = book.author ? book.author : "Author unknown";
+
+      var date = document.createElement("p");
+      date.className = "shelf-date";
+      date.textContent = "Finished: " + formatDate(book.dateFinished);
+
+      card.appendChild(cover);
+      card.appendChild(title);
+      card.appendChild(author);
+      card.appendChild(date);
+
+      if (book.rating) {
+        var stars = document.createElement("p");
+        stars.className = "stars";
+        stars.textContent = ratingStars(book.rating);
+        card.appendChild(stars);
+      }
+
+      card.addEventListener("click", function () {
+        openBookModal(book);
+      });
+
+      card.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          openBookModal(book);
+        }
+      });
+
+      shelfEl.appendChild(card);
+    });
+  }
+
+  function render() {
+    var books = loadBooks();
+    books.sort(sortByDateDesc);
+
+    updateKidSelectOptions(loadKids());
+
+    var tabBooks = filteredBooks(books, activeTab);
+    populateYearFilterOptions(tabBooks);
+    renderMonthChart(tabBooks);
+
+    var visible = applyCombinedFilters(tabBooks);
+    statsEl.textContent = "Total books: " + visible.length + " | Books this year: " + booksThisYear(visible);
+
+    listEl.innerHTML = "";
+    shelfEl.innerHTML = "";
+
+    listEl.classList.toggle("hidden", activeView !== "list");
+    shelfEl.classList.toggle("hidden", activeView !== "shelf");
+
+    if (visible.length === 0) {
+      renderEmptyState(emptyMessageForTab(activeTab, isAnyFilterActive()));
+      return;
+    }
+
+    if (activeView === "list") {
+      renderList(visible);
+    } else {
+      renderShelf(visible);
+    }
+  }
+
   function clearForm() {
     editingId = null;
     form.reset();
@@ -540,6 +702,7 @@
   }
 
   function startEdit(book) {
+    closeBookModal();
     editingId = book.id;
     kidInput.value = book.kid;
     titleInput.value = book.title;
@@ -558,9 +721,14 @@
     });
     saveBooks(books);
     syncKidsFromBooks();
+
     if (editingId === id) {
       clearForm();
     }
+    if (modalBookId === id) {
+      closeBookModal();
+    }
+
     render();
   }
 
@@ -605,6 +773,7 @@
 
   function setActiveTab(newTab, shouldFocus) {
     activeTab = newTab;
+
     tabButtons.forEach(function (btn) {
       var isActive = btn.getAttribute("data-tab") === activeTab;
       btn.classList.toggle("active", isActive);
@@ -614,6 +783,23 @@
         btn.focus();
       }
     });
+
+    render();
+  }
+
+  function setActiveView(newView, shouldFocus) {
+    activeView = newView === "shelf" ? "shelf" : "list";
+    saveViewPreference(activeView);
+
+    viewButtons.forEach(function (btn) {
+      var isActive = btn.getAttribute("data-view") === activeView;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+      if (isActive && shouldFocus) {
+        btn.focus();
+      }
+    });
+
     render();
   }
 
@@ -645,6 +831,25 @@
     });
 
     setActiveTab(activeTab, false);
+  }
+
+  function setupViewToggle() {
+    activeView = loadViewPreference();
+
+    viewButtons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        setActiveView(button.getAttribute("data-view"), false);
+      });
+
+      button.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          setActiveView(button.getAttribute("data-view"), true);
+        }
+      });
+    });
+
+    setActiveView(activeView, false);
   }
 
   function setupFilters() {
@@ -751,8 +956,7 @@
 
     return {
       addedBooks: importedBooks.length,
-      skippedBooks: payload.books.length - importedBooks.length,
-      totalBooks: mergedBooks.length
+      skippedBooks: payload.books.length - importedBooks.length
     };
   }
 
@@ -816,6 +1020,45 @@
     });
   }
 
+  function findBookById(id) {
+    return loadBooks().find(function (book) {
+      return book.id === id;
+    }) || null;
+  }
+
+  function setupModal() {
+    modalCloseBtn.addEventListener("click", closeBookModal);
+
+    modalEl.addEventListener("click", function (event) {
+      if (event.target === modalEl) {
+        closeBookModal();
+      }
+    });
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && !modalEl.classList.contains("hidden")) {
+        closeBookModal();
+      }
+    });
+
+    modalEditBtn.addEventListener("click", function () {
+      if (!modalBookId) {
+        return;
+      }
+      var book = findBookById(modalBookId);
+      if (book) {
+        startEdit(book);
+      }
+    });
+
+    modalDeleteBtn.addEventListener("click", function () {
+      if (!modalBookId) {
+        return;
+      }
+      removeBook(modalBookId);
+    });
+  }
+
   form.addEventListener("submit", handleSubmit);
   cancelEditBtn.addEventListener("click", clearForm);
 
@@ -823,10 +1066,7 @@
   syncKidsFromBooks();
   setupFilters();
   setupDataTools();
+  setupModal();
+  setupViewToggle();
   setupTabs();
 })();
-
-
-
-
-

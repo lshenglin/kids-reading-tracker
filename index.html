@@ -64,6 +64,11 @@
         <button class="tab" data-tab="All" role="tab" aria-selected="false">All</button>
       </div>
 
+      <div class="view-toggle" role="group" aria-label="View mode">
+        <button type="button" class="view-btn active" data-view="list" aria-pressed="true">List</button>
+        <button type="button" class="view-btn" data-view="shelf" aria-pressed="false">Bookshelf</button>
+      </div>
+
       <div class="filters" aria-label="Book filters">
         <div class="field">
           <label for="searchFilter">Search</label>
@@ -99,13 +104,26 @@
         <h3 class="chart-title">Last 6 Months Finished</h3>
         <div id="month-chart" class="month-chart" role="img" aria-label="Books finished in the last six months"></div>
       </section>
+
       <ul id="book-list" class="book-list" aria-live="polite"></ul>
+      <div id="bookshelf-grid" class="bookshelf-grid hidden" aria-live="polite"></div>
     </section>
   </main>
+
+  <div id="book-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-content">
+      <button type="button" id="modal-close" class="modal-close" aria-label="Close details">Close</button>
+      <h3 id="modal-title" class="modal-title"></h3>
+      <p id="modal-meta" class="meta"></p>
+      <p id="modal-rating" class="stars hidden"></p>
+      <p id="modal-notes" class="notes hidden"></p>
+      <div class="item-actions">
+        <button type="button" id="modal-edit">Edit</button>
+        <button type="button" id="modal-delete" class="danger">Delete</button>
+      </div>
+    </div>
+  </div>
 
   <script src="./app.js"></script>
 </body>
 </html>
-
-
-
