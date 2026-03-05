@@ -1,24 +1,87 @@
 ﻿# Kids Reading Tracker
 
-Static GitHub Pages app (plain HTML/CSS/JS) to track finished books for two kids: Isa and Josh.
+Static GitHub Pages app (plain HTML/CSS/JS) for tracking finished books.
 
-## Features (V1)
-- Tabs: Isa / Josh / All
-- Add finished books (kid + title required; author, rating, notes optional)
-- Date finished defaults to today
-- List sorted by newest finished date first
-- Edit and delete entries
-- Stats for selected tab: total books + books finished this year
-- Seeds 4 sample books on first load
-- Data stored in `localStorage` key: `kidsReadingTracker.v1`
+## Runtime stack
+- Plain `index.html` + `styles.css` + `app.js`
+- Supabase JS from CDN (`@supabase/supabase-js@2`)
+- No framework, no build step
 
-## Run locally
-Open `index.html` in a browser.
+## Supabase config in app
+`app.js` contains:
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
 
-## Deploy to GitHub Pages
-1. Push these files to your repository.
-2. In GitHub: **Settings > Pages**.
-3. Set source to your branch (for example `main`) and `/ (root)`.
-4. Save and open the published URL.
+Current values are already set in the file.
 
-This app uses only relative paths (`./styles.css`, `./app.js`) so it works on GitHub Pages.
+## Required Supabase table
+Create `public.books`:
+
+```sql
+create table if not exists public.books (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null,
+  kid_name text not null,
+  title text not null,
+  author text,
+  date_finished date not null,
+  rating int,
+  notes text,
+  created_at timestamptz default now()
+);
+```
+
+## Required RLS
+Enable RLS and add user-scoped policies:
+
+```sql
+alter table public.books enable row level security;
+
+create policy "books_select_own"
+on public.books
+for select
+using (auth.uid() = user_id);
+
+create policy "books_insert_own"
+on public.books
+for insert
+with check (auth.uid() = user_id);
+
+create policy "books_update_own"
+on public.books
+for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+create policy "books_delete_own"
+on public.books
+for delete
+using (auth.uid() = user_id);
+```
+
+## Auth mode
+The app uses Supabase anonymous sign-in:
+- On startup, it checks for a session.
+- If none exists, it signs in anonymously.
+- All book rows are scoped by `user_id`.
+
+Important: anonymous sessions are browser/device-local. If browser data is cleared, that anonymous user identity can be lost.
+
+## LocalStorage usage
+LocalStorage is only used for:
+- `kidsReadingTracker.view` (UI view preference)
+- `kidsReadingTracker.migratedToCloud` (one-time migration flag)
+- Optional read-only migration source: `kidsReadingTracker.v1`
+
+## Local migration helper
+If local legacy data exists under `kidsReadingTracker.v1` and migration flag is not set, the app shows:
+- `Migrate local data to cloud`
+
+Clicking it inserts valid local books to Supabase, sets migration flag, then reloads cloud data.
+
+## GitHub Pages
+Works on GitHub Pages with relative paths.
+
+`index.html` script order:
+1. Supabase CDN script
+2. `./app.js`

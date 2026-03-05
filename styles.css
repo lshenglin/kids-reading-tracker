@@ -141,7 +141,7 @@ textarea:focus-visible,
 }
 
 .hidden {
-  display: none;
+  display: none !important;
 }
 
 .tabs {
@@ -375,6 +375,8 @@ textarea:focus-visible,
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
   display: grid;
   place-items: center;
+  position: relative;
+  overflow: hidden;
 }
 
 .cover-initials {
@@ -382,6 +384,27 @@ textarea:focus-visible,
   font-weight: 800;
   letter-spacing: 0.08em;
   color: rgba(255, 255, 255, 0.95);
+}
+
+.cover.has-image {
+  background-image:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.08), rgba(15, 23, 42, 0.22)),
+    var(--cover-image);
+  background-size: cover;
+  background-position: center;
+}
+
+.cover.has-image .cover-initials {
+  display: none;
+}
+
+.cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
 }
 
 .shelf-title {
@@ -492,3 +515,8 @@ textarea:focus-visible,
     flex-wrap: wrap;
   }
 }
+
+
+
+
+

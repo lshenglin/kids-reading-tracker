@@ -94,6 +94,7 @@
       <div class="data-tools" aria-label="Data tools">
         <button type="button" id="export-btn">Export JSON</button>
         <button type="button" id="import-btn" class="secondary">Import JSON</button>
+        <button type="button" id="migrate-btn" class="secondary hidden">Migrate local data to cloud</button>
         <input id="import-file" type="file" accept="application/json,.json" class="hidden" aria-hidden="true">
       </div>
 
@@ -124,6 +125,7 @@
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./app.js"></script>
 </body>
 </html>
