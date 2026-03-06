@@ -574,3 +574,13 @@ textarea:focus-visible,
 
 
 
+
+.auth-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.auth-hint {
+  margin: 0.25rem 0 0.75rem;
+  color: var(--muted);
+}

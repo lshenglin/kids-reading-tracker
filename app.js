@@ -58,6 +58,12 @@
     stats: document.getElementById("stats"),
     chart: document.getElementById("month-chart"),
     msg: document.getElementById("data-message"),
+    authEmail: document.getElementById("auth-email"),
+    authSend: document.getElementById("auth-send-link"),
+    authSignOut: document.getElementById("auth-signout"),
+    authStatus: document.getElementById("auth-status"),
+    authHint: document.getElementById("auth-hint"),
+    authRequired: Array.from(document.querySelectorAll(".requires-auth")),
     exportBtn: document.getElementById("export-btn"),
     importBtn: document.getElementById("import-btn"),
     migrateBtn: document.getElementById("migrate-btn"),
@@ -101,17 +107,54 @@
     el.msg.classList.remove("error");
   };
 
-  async function ensureAuth() {
+  async function refreshSession() {
     if (!supabase) throw new Error("Supabase client did not load.");
-    let session = (await supabase.auth.getSession()).data.session;
-    if (!session) {
-      const signIn = await supabase.auth.signInAnonymously();
-      if (signIn.error) throw signIn.error;
-      session = (await supabase.auth.getSession()).data.session;
+    const sessionRes = await supabase.auth.getSession();
+    const session = sessionRes?.data?.session || null;
+    currentUserId = session?.user?.id || null;
+    currentAccessToken = session?.access_token || "";
+    return session;
+  }
+
+  function setAuthStatus(text, isErr) {
+    if (!el.authStatus) {
+      showMsg(text, isErr);
+      return;
     }
-    if (!session?.user?.id) throw new Error("Anonymous auth unavailable.");
-    currentUserId = session.user.id;
-    currentAccessToken = session.access_token || "";
+    el.authStatus.textContent = text;
+    el.authStatus.classList.remove("hidden", "error");
+    el.authStatus.classList.toggle("error", !!isErr);
+  }
+
+  function updateAuthUi(session) {
+    const loggedIn = !!session?.user?.id;
+    if (el.authHint) {
+      el.authHint.textContent = loggedIn
+        ? `Signed in as ${session.user.email || "your account"}.`
+        : "Use email magic link to access your cloud books from any device.";
+    }
+    if (el.authSend) el.authSend.classList.toggle("hidden", loggedIn);
+    if (el.authEmail) el.authEmail.disabled = loggedIn;
+    if (el.authSignOut) el.authSignOut.classList.toggle("hidden", !loggedIn);
+    el.authRequired.forEach((node) => node.classList.toggle("hidden", !loggedIn));
+  }
+
+  async function applySession(session) {
+    updateAuthUi(session);
+    if (!session?.user?.id) {
+      books = [];
+      render();
+      setAuthStatus("Sign in with magic link to load your cloud books.", false);
+      return;
+    }
+
+    await loadCloudBooks();
+    if (localStorage.getItem(MIGRATED_FLAG_KEY) !== "1" && legacyBooks().length > 0) {
+      el.migrateBtn.classList.remove("hidden");
+    }
+    render();
+    clearMsg();
+    setAuthStatus("Signed in. Cloud books loaded.", false);
   }
 
   const rowToBook = (r) => ({
@@ -815,6 +858,10 @@
 
     el.form.addEventListener("submit", async (ev) => {
       ev.preventDefault();
+      if (!currentUserId) {
+        setAuthStatus("Please sign in first.", true);
+        return;
+      }
       const title = el.title.value.trim();
       if (!title) return el.title.focus();
       const entry = { kid: el.kid.value, title, author: el.author.value.trim(), dateFinished: el.date.value || todayIso(), rating: normalizeRating(el.rating.value), notes: el.notes.value.trim(), coverUrl: formCoverUrl };
@@ -829,6 +876,46 @@
     });
 
     el.cancel.addEventListener("click", clearForm);
+
+    if (el.authSend && el.authEmail) {
+      el.authSend.addEventListener("click", async () => {
+        const email = el.authEmail.value.trim();
+        if (!email) {
+          setAuthStatus("Enter an email address.", true);
+          el.authEmail.focus();
+          return;
+        }
+        try {
+          const result = await supabase.auth.signInWithOtp({
+            email,
+            options: { emailRedirectTo: window.location.href.split("#")[0] }
+          });
+          if (result.error) throw result.error;
+          setAuthStatus("Magic link sent. Check your email inbox.", false);
+        } catch (err) {
+          setAuthStatus(`Failed to send magic link: ${err.message || "unknown error"}`, true);
+        }
+      });
+
+      el.authEmail.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          el.authSend.click();
+        }
+      });
+    }
+
+    if (el.authSignOut) {
+      el.authSignOut.addEventListener("click", async () => {
+        try {
+          const res = await supabase.auth.signOut();
+          if (res.error) throw res.error;
+          setAuthStatus("Signed out.", false);
+        } catch (err) {
+          setAuthStatus(`Sign out failed: ${err.message || "unknown error"}`, true);
+        }
+      });
+    }
 
     el.title.addEventListener("input", scheduleTitleLookup);
     el.title.addEventListener("keydown", onTitleKeyDown);
@@ -899,6 +986,11 @@
 
     el.importBtn.addEventListener("click", () => el.file.click());
     el.file.addEventListener("change", () => {
+      if (!currentUserId) {
+        setAuthStatus("Please sign in first.", true);
+        el.file.value = "";
+        return;
+      }
       const f = el.file.files?.[0];
       if (!f) return;
       const r = new FileReader();
@@ -936,19 +1028,29 @@
 
   async function init() {
     wireUi();
-    if (!supabase) return showMsg("Supabase client failed to load. Check connection and reload.", true);
+    if (!supabase) {
+      showMsg("Supabase client failed to load. Check connection and reload.", true);
+      return;
+    }
+
+    supabase.auth.onAuthStateChange(async (_event, session) => {
+      try {
+        currentUserId = session?.user?.id || null;
+        currentAccessToken = session?.access_token || "";
+        await applySession(session || null);
+      } catch (err) {
+        showMsg(`Cloud setup failed: ${err.message || "unknown error"}`, true);
+      }
+    });
+
     try {
-      await ensureAuth();
-      await loadCloudBooks();
-      if (localStorage.getItem(MIGRATED_FLAG_KEY) !== "1" && legacyBooks().length > 0) el.migrateBtn.classList.remove("hidden");
-      render();
-      clearMsg();
+      const session = await refreshSession();
+      await applySession(session);
     } catch (err) {
       render();
       showMsg(`Cloud setup failed: ${err.message || "unknown error"}`, true);
     }
   }
-
   void init();
 })();
 

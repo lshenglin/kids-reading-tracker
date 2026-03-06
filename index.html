@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -13,7 +13,23 @@
   </header>
 
   <main class="container">
-    <section class="card">
+    <section class="card" id="auth-card" aria-live="polite">
+      <h2>Sign In</h2>
+      <p id="auth-hint" class="auth-hint">Use email magic link to access your cloud books from any device.</p>
+      <div id="auth-form" class="auth-form">
+        <div class="field">
+          <label for="auth-email">Email</label>
+          <input id="auth-email" type="email" autocomplete="email" placeholder="you@example.com">
+        </div>
+        <div class="actions">
+          <button type="button" id="auth-send-link">Send Magic Link</button>
+          <button type="button" id="auth-signout" class="secondary hidden">Sign Out</button>
+        </div>
+      </div>
+      <p id="auth-status" class="data-message hidden" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="card requires-auth">
       <h2>Add Finished Book</h2>
       <form id="book-form" class="book-form">
         <div class="field">
@@ -57,7 +73,7 @@
       </form>
     </section>
 
-    <section class="card">
+    <section class="card requires-auth">
       <h2>Books</h2>
       <div class="tabs" role="tablist" aria-label="Kid tabs">
         <button class="tab active" data-tab="Isa" role="tab" aria-selected="true">Isa</button>

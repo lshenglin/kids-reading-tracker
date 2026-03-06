@@ -60,12 +60,19 @@ using (auth.uid() = user_id);
 ```
 
 ## Auth mode
-The app uses Supabase anonymous sign-in:
-- On startup, it checks for a session.
-- If none exists, it signs in anonymously.
-- All book rows are scoped by `user_id`.
+The app uses Supabase Email Magic Link sign-in:
+- User enters email and receives a sign-in link.
+- After opening the link, session is restored and cloud books load.
+- All book rows remain scoped by `user_id` (`auth.uid()`).
 
-Important: anonymous sessions are browser/device-local. If browser data is cleared, that anonymous user identity can be lost.
+Required Supabase Auth settings:
+- Enable provider: Email
+- Enable magic links / OTP sign-in
+- Add redirect URLs for each environment you use, for example:
+  - GitHub Pages URL (your deployed site)
+  - Local URL (for local testing)
+
+Note: users can access the same cloud books across devices/browsers by signing into the same email account.
 
 ## LocalStorage usage
 LocalStorage is only used for:
