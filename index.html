@@ -26,7 +26,8 @@
 
         <div class="field">
           <label for="title">Title *</label>
-          <input id="title" name="title" type="text" required>
+          <input id="title" name="title" type="text" required autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="title-suggestions">
+          <div id="title-suggestions" class="title-suggestions hidden" role="listbox" aria-label="Book suggestions"></div>
         </div>
 
         <div class="field">
@@ -129,3 +130,5 @@
   <script src="./app.js"></script>
 </body>
 </html>
+
+

@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   --bg: #f4f7fb;
   --card: #ffffff;
   --text: #1f2a37;
@@ -64,6 +64,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+  position: relative;
 }
 
 .field label {
@@ -86,6 +87,58 @@ button {
   padding: 0.55rem 0.65rem;
   width: 100%;
   background: #fff;
+}
+
+.title-suggestions {
+  margin-top: 0.35rem;
+  border: 1px solid #cfe0ef;
+  border-radius: 8px;
+  background: #fff;
+  position: absolute;
+  top: calc(100% + 0.15rem);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  max-height: 240px;
+  overflow: auto;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.1);
+}
+
+.title-suggestion {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #e5edf6;
+  border-radius: 0;
+  background: #fff;
+  color: var(--text);
+  text-align: left;
+  padding: 0.55rem 0.65rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.title-suggestion:last-child {
+  border-bottom: 0;
+}
+
+.title-suggestion strong {
+  font-size: 0.9rem;
+}
+
+.title-suggestion span {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.title-suggestion.active,
+.title-suggestion:hover {
+  background: #eff6ff;
+}
+
+.title-suggestion.empty {
+  cursor: default;
+  color: var(--muted);
+  border-bottom: 0;
 }
 
 .full-width {
@@ -515,6 +568,7 @@ textarea:focus-visible,
     flex-wrap: wrap;
   }
 }
+
 
 
 

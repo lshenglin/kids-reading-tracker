@@ -1,4 +1,4 @@
-﻿
+
 (function () {
   "use strict";
 
@@ -7,6 +7,7 @@
   const supabase = window.supabase && window.supabase.createClient
     ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
     : null;
+  const LOOKUP_FUNCTION_URL = `${SUPABASE_URL}/functions/v1/google-books-lookup`;
 
   const STORAGE_KEY = "kidsReadingTracker.v1";
   const VIEW_KEY = "kidsReadingTracker.view";
@@ -14,11 +15,14 @@
   const BASE_KIDS = ["Isa", "Josh"];
 
   let currentUserId = null;
+  let currentAccessToken = "";
   let books = [];
   let activeTab = "Isa";
   let editingId = null;
   let activeView = localStorage.getItem(VIEW_KEY) === "shelf" ? "shelf" : "list";
   let modalBookId = null;
+  let hasCoverUrlColumn = true;
+  let formCoverUrl = "";
 
   const coverCache = {};
   const coverPending = {};
@@ -26,10 +30,18 @@
 
   const filterState = { search: "", year: "All", rating: "All" };
 
+  const lookupCache = {};
+  let lookupTimer = null;
+  let lookupResults = [];
+  let lookupActiveIndex = -1;
+  let lookupAbortController = null;
+  let lookupRequestId = 0;
+
   const el = {
     form: document.getElementById("book-form"),
     kid: document.getElementById("kid"),
     title: document.getElementById("title"),
+    titleSuggestions: document.getElementById("title-suggestions"),
     author: document.getElementById("author"),
     date: document.getElementById("dateFinished"),
     rating: document.getElementById("rating"),
@@ -71,7 +83,7 @@
     return Number.isInteger(n) && n >= 1 && n <= 5 ? n : null;
   };
   const fmtDate = (d) => (d ? new Date(d + "T00:00:00").toLocaleDateString() : "Unknown date");
-  const stars = (r) => (r ? "★★★★★".slice(0, r) + "☆☆☆☆☆".slice(0, 5 - r) : "");
+  const stars = (r) => (r ? "\u2605\u2605\u2605\u2605\u2605".slice(0, r) + "\u2606\u2606\u2606\u2606\u2606".slice(0, 5 - r) : "");
   const byDateDesc = (a, b) => {
     const t = new Date(b.dateFinished + "T00:00:00") - new Date(a.dateFinished + "T00:00:00");
     if (t !== 0) return t;
@@ -99,6 +111,7 @@
     }
     if (!session?.user?.id) throw new Error("Anonymous auth unavailable.");
     currentUserId = session.user.id;
+    currentAccessToken = session.access_token || "";
   }
 
   const rowToBook = (r) => ({
@@ -109,16 +122,35 @@
     dateFinished: r.date_finished,
     rating: r.rating,
     notes: r.notes || "",
-    createdAt: r.created_at
+    createdAt: r.created_at,
+    coverUrl: r.cover_url || ""
   });
 
+  function isMissingCoverColumnError(err) {
+    const msg = String(err?.message || "").toLowerCase();
+    return msg.includes("cover_url") && (msg.includes("does not exist") || msg.includes("column"));
+  }
+
   async function loadCloudBooks() {
-    const res = await supabase
+    let res = await supabase
       .from("books")
-      .select("id,user_id,kid_name,title,author,date_finished,rating,notes,created_at")
+      .select("id,user_id,kid_name,title,author,date_finished,rating,notes,cover_url,created_at")
       .eq("user_id", currentUserId)
       .order("date_finished", { ascending: false })
       .order("created_at", { ascending: false });
+
+    if (res.error && isMissingCoverColumnError(res.error)) {
+      hasCoverUrlColumn = false;
+      res = await supabase
+        .from("books")
+        .select("id,user_id,kid_name,title,author,date_finished,rating,notes,created_at")
+        .eq("user_id", currentUserId)
+        .order("date_finished", { ascending: false })
+        .order("created_at", { ascending: false });
+    } else if (!res.error) {
+      hasCoverUrlColumn = true;
+    }
+
     if (res.error) throw res.error;
     books = (res.data || []).map(rowToBook);
   }
@@ -250,9 +282,246 @@
   }
 
   function getCover(book) {
+    const manual = String(book.coverUrl || "").trim();
+    if (manual) return manual.replace(/^http:\/\//i, "https://");
     const key = coverKey(book);
     if (!(key in coverCache)) requestCover(book);
     return coverCache[key] || null;
+  }
+
+  function hideTitleSuggestions() {
+    lookupResults = [];
+    lookupActiveIndex = -1;
+    el.titleSuggestions.classList.add("hidden");
+    el.titleSuggestions.innerHTML = "";
+    el.title.setAttribute("aria-expanded", "false");
+    el.title.removeAttribute("aria-activedescendant");
+  }
+
+
+  function showSuggestionMessage(message) {
+    el.titleSuggestions.innerHTML = `<div class="title-suggestion empty" role="note">${message}</div>`;
+    el.titleSuggestions.classList.remove("hidden");
+    el.title.setAttribute("aria-expanded", "true");
+    el.title.removeAttribute("aria-activedescendant");
+  }
+
+
+  function applyLookupSelection(index) {
+    const item = lookupResults[index];
+    if (!item) return;
+    const volume = item.volumeInfo || {};
+    const title = volume.title || "";
+    const subtitle = volume.subtitle ? `: ${volume.subtitle}` : "";
+    const authors = Array.isArray(volume.authors) ? volume.authors.join(", ") : "";
+    const imageLinks = volume.imageLinks || {};
+    const coverUrl = imageLinks.thumbnail || imageLinks.smallThumbnail || "";
+
+    el.title.value = `${title}${subtitle}`.trim();
+    if (authors) {
+      el.author.value = authors;
+    }
+    if (coverUrl) {
+      formCoverUrl = coverUrl.replace(/^http:\/\//i, "https://");
+    }
+    hideTitleSuggestions();
+  }
+
+  function renderTitleSuggestions() {
+    if (!lookupResults.length) {
+      showSuggestionMessage("No suggestions found on Google Books");
+      return;
+    }
+
+    el.titleSuggestions.innerHTML = "";
+    lookupResults.forEach((item, index) => {
+      const volume = item.volumeInfo || {};
+      const title = volume.title || "Untitled";
+      const subtitle = volume.subtitle ? `: ${volume.subtitle}` : "";
+      const authorText = Array.isArray(volume.authors) && volume.authors.length
+        ? volume.authors.join(", ")
+        : "Unknown author";
+      const year = (volume.publishedDate || "").slice(0, 4);
+
+      const option = document.createElement("button");
+      option.type = "button";
+      option.id = `title-suggestion-${index}`;
+      option.className = "title-suggestion" + (index === lookupActiveIndex ? " active" : "");
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", index === lookupActiveIndex ? "true" : "false");
+      option.innerHTML = `<strong>${title}${subtitle}</strong><span>${authorText}${year ? ` - ${year}` : ""}</span>`;
+      const choose = (ev) => {
+        ev.preventDefault();
+        applyLookupSelection(index);
+      };
+      option.addEventListener("pointerdown", choose);
+      option.addEventListener("mousedown", choose);
+      option.addEventListener("click", choose);
+      el.titleSuggestions.appendChild(option);
+    });
+
+    el.titleSuggestions.classList.remove("hidden");
+    el.title.setAttribute("aria-expanded", "true");
+    if (lookupActiveIndex >= 0) {
+      el.title.setAttribute("aria-activedescendant", `title-suggestion-${lookupActiveIndex}`);
+    } else {
+      el.title.removeAttribute("aria-activedescendant");
+    }
+  }
+
+  async function lookupViaSupabaseFunction(query, signal) {
+    const headers = {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_ANON_KEY
+    };
+    if (currentAccessToken) {
+      headers.Authorization = `Bearer ${currentAccessToken}`;
+    }
+
+    const response = await fetch(LOOKUP_FUNCTION_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query, maxResults: 5 }),
+      signal,
+      cache: "no-store"
+    });
+
+    if (!response.ok) return { ok: false, items: [] };
+    const payload = await response.json();
+    const items = Array.isArray(payload?.items) ? payload.items.slice(0, 5) : [];
+    return { ok: true, items };
+  }
+
+  async function lookupDirectGoogle(query, signal) {
+    const bases = [
+      "https://books.googleapis.com/books/v1/volumes",
+      "https://www.googleapis.com/books/v1/volumes"
+    ];
+    const queryModes = ["intitle:", ""];
+    const params = "maxResults=5";
+
+    let items = [];
+    let ok = false;
+    for (const base of bases) {
+      for (const mode of queryModes) {
+        const q = mode ? `${mode}${query}` : query;
+        const url = `${base}?q=${encodeURIComponent(q)}&${params}`;
+        const response = await fetch(url, { signal, cache: "no-store" });
+        if (!response.ok) continue;
+        ok = true;
+        const data = await response.json();
+        items = Array.isArray(data?.items) ? data.items.slice(0, 5) : [];
+        if (items.length) break;
+      }
+      if (items.length) break;
+    }
+
+    return { ok, items };
+  }
+  async function fetchTitleSuggestions(query, requestId, signal) {
+    const key = query.trim().toLowerCase();
+
+    if (Array.isArray(lookupCache[key]) && lookupCache[key].length) {
+      if (requestId !== lookupRequestId) return;
+      if (el.title.value.trim().toLowerCase() !== key) return;
+      lookupResults = lookupCache[key];
+      lookupActiveIndex = lookupResults.length ? 0 : -1;
+      renderTitleSuggestions();
+      return;
+    }
+
+    try {
+      let result = await lookupViaSupabaseFunction(query, signal);
+      if (!result.ok) {
+        result = await lookupDirectGoogle(query, signal);
+      }
+
+      if (!result.ok) {
+        if (requestId === lookupRequestId) {
+          showSuggestionMessage("Could not reach Google Books lookup");
+        }
+        return;
+      }
+
+      const results = Array.isArray(result.items) ? result.items.slice(0, 5) : [];
+
+      if (results.length) {
+        lookupCache[key] = results;
+      } else {
+        delete lookupCache[key];
+      }
+
+      if (requestId !== lookupRequestId) return;
+      if (el.title.value.trim().toLowerCase() !== key) return;
+      lookupResults = results;
+      lookupActiveIndex = results.length ? 0 : -1;
+      renderTitleSuggestions();
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      if (requestId === lookupRequestId) {
+        showSuggestionMessage("Could not reach Google Books lookup");
+      }
+    }
+  }
+  function scheduleTitleLookup() {
+    const query = el.title.value.trim();
+    formCoverUrl = "";
+
+    if (lookupTimer) {
+      clearTimeout(lookupTimer);
+      lookupTimer = null;
+    }
+    if (lookupAbortController) {
+      lookupAbortController.abort();
+      lookupAbortController = null;
+    }
+
+    if (query.length < 3) {
+      hideTitleSuggestions();
+      return;
+    }
+
+    showSuggestionMessage("Searching...");
+
+    lookupTimer = setTimeout(() => {
+      lookupRequestId += 1;
+      lookupAbortController = new AbortController();
+      void fetchTitleSuggestions(query, lookupRequestId, lookupAbortController.signal);
+    }, 400);
+  }
+
+  function onTitleKeyDown(ev) {
+    if (el.titleSuggestions.classList.contains("hidden") || !lookupResults.length) {
+      if (ev.key === "Escape") {
+        hideTitleSuggestions();
+      }
+      return;
+    }
+
+    if (ev.key === "ArrowDown") {
+      ev.preventDefault();
+      lookupActiveIndex = (lookupActiveIndex + 1) % lookupResults.length;
+      renderTitleSuggestions();
+      return;
+    }
+
+    if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      lookupActiveIndex = (lookupActiveIndex - 1 + lookupResults.length) % lookupResults.length;
+      renderTitleSuggestions();
+      return;
+    }
+
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      applyLookupSelection(lookupActiveIndex >= 0 ? lookupActiveIndex : 0);
+      return;
+    }
+
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      hideTitleSuggestions();
+    }
   }
 
   function openModal(book) {
@@ -372,22 +641,70 @@
   }
 
   async function createBook(entry) {
-    const res = await supabase
+    const payload = {
+      user_id: currentUserId,
+      kid_name: entry.kid,
+      title: entry.title,
+      author: entry.author || null,
+      date_finished: entry.dateFinished,
+      rating: entry.rating,
+      notes: entry.notes || null
+    };
+    if (hasCoverUrlColumn && entry.coverUrl) payload.cover_url = entry.coverUrl;
+
+    let res = await supabase
       .from("books")
-      .insert({ user_id: currentUserId, kid_name: entry.kid, title: entry.title, author: entry.author || null, date_finished: entry.dateFinished, rating: entry.rating, notes: entry.notes || null })
-      .select("id,user_id,kid_name,title,author,date_finished,rating,notes,created_at")
+      .insert(payload)
+      .select("id,user_id,kid_name,title,author,date_finished,rating,notes,cover_url,created_at")
       .single();
+
+    if (res.error && isMissingCoverColumnError(res.error)) {
+      hasCoverUrlColumn = false;
+      delete payload.cover_url;
+      res = await supabase
+        .from("books")
+        .insert(payload)
+        .select("id,user_id,kid_name,title,author,date_finished,rating,notes,created_at")
+        .single();
+    } else if (!res.error) {
+      hasCoverUrlColumn = true;
+    }
+
     if (res.error) throw res.error;
     books.push(rowToBook(res.data));
   }
 
   async function updateBook(id, entry) {
-    const res = await supabase
+    const payload = {
+      kid_name: entry.kid,
+      title: entry.title,
+      author: entry.author || null,
+      date_finished: entry.dateFinished,
+      rating: entry.rating,
+      notes: entry.notes || null
+    };
+    if (hasCoverUrlColumn) payload.cover_url = entry.coverUrl || null;
+
+    let res = await supabase
       .from("books")
-      .update({ kid_name: entry.kid, title: entry.title, author: entry.author || null, date_finished: entry.dateFinished, rating: entry.rating, notes: entry.notes || null })
+      .update(payload)
       .eq("id", id)
-      .select("id,user_id,kid_name,title,author,date_finished,rating,notes,created_at")
+      .select("id,user_id,kid_name,title,author,date_finished,rating,notes,cover_url,created_at")
       .single();
+
+    if (res.error && isMissingCoverColumnError(res.error)) {
+      hasCoverUrlColumn = false;
+      delete payload.cover_url;
+      res = await supabase
+        .from("books")
+        .update(payload)
+        .eq("id", id)
+        .select("id,user_id,kid_name,title,author,date_finished,rating,notes,created_at")
+        .single();
+    } else if (!res.error) {
+      hasCoverUrlColumn = true;
+    }
+
     if (res.error) throw res.error;
     books = books.map((b) => (b.id === id ? rowToBook(res.data) : b));
   }
@@ -403,14 +720,17 @@
 
   function clearForm() {
     editingId = null;
+    formCoverUrl = "";
     el.form.reset();
     el.date.value = todayIso();
     el.submit.textContent = "Add Book";
     el.cancel.classList.add("hidden");
+    hideTitleSuggestions();
   }
 
   function startEdit(book) {
     closeModal();
+    hideTitleSuggestions();
     editingId = book.id;
     el.kid.value = book.kid;
     el.title.value = book.title;
@@ -418,6 +738,7 @@
     el.date.value = book.dateFinished || todayIso();
     el.rating.value = book.rating || "";
     el.notes.value = book.notes || "";
+    formCoverUrl = book.coverUrl || "";
     el.submit.textContent = "Save Changes";
     el.cancel.classList.remove("hidden");
     el.title.focus();
@@ -441,6 +762,7 @@
         return;
       }
       const row = { user_id: currentUserId, kid_name: b.kid, title: b.title, author: b.author || null, date_finished: b.dateFinished, rating: normalizeRating(b.rating), notes: b.notes || null };
+      if (hasCoverUrlColumn && b.coverUrl) row.cover_url = String(b.coverUrl);
       if (isUuid(b.id)) row.id = b.id;
       rows.push(row);
     });
@@ -466,7 +788,11 @@
   async function migrateLegacy() {
     const rows = legacyBooks()
       .filter((b) => b && b.kid && b.title && /^\d{4}-\d{2}-\d{2}$/.test(String(b.dateFinished || "")))
-      .map((b) => ({ user_id: currentUserId, kid_name: String(b.kid).trim(), title: String(b.title).trim(), author: b.author ? String(b.author).trim() : null, date_finished: String(b.dateFinished), rating: normalizeRating(b.rating), notes: b.notes ? String(b.notes).trim() : null }));
+      .map((b) => {
+        const row = { user_id: currentUserId, kid_name: String(b.kid).trim(), title: String(b.title).trim(), author: b.author ? String(b.author).trim() : null, date_finished: String(b.dateFinished), rating: normalizeRating(b.rating), notes: b.notes ? String(b.notes).trim() : null };
+        if (hasCoverUrlColumn && b.coverUrl) row.cover_url = String(b.coverUrl);
+        return row;
+      });
 
     if (!rows.length) {
       localStorage.setItem(MIGRATED_FLAG_KEY, "1");
@@ -491,7 +817,7 @@
       ev.preventDefault();
       const title = el.title.value.trim();
       if (!title) return el.title.focus();
-      const entry = { kid: el.kid.value, title, author: el.author.value.trim(), dateFinished: el.date.value || todayIso(), rating: normalizeRating(el.rating.value), notes: el.notes.value.trim() };
+      const entry = { kid: el.kid.value, title, author: el.author.value.trim(), dateFinished: el.date.value || todayIso(), rating: normalizeRating(el.rating.value), notes: el.notes.value.trim(), coverUrl: formCoverUrl };
       try {
         if (editingId) await updateBook(editingId, entry); else await createBook(entry);
         clearForm();
@@ -503,6 +829,20 @@
     });
 
     el.cancel.addEventListener("click", clearForm);
+
+    el.title.addEventListener("input", scheduleTitleLookup);
+    el.title.addEventListener("keydown", onTitleKeyDown);
+    el.title.addEventListener("blur", () => {
+      setTimeout(() => {
+        if (document.activeElement !== el.title) hideTitleSuggestions();
+      }, 120);
+    });
+
+    document.addEventListener("click", (ev) => {
+      if (ev.target !== el.title && !el.titleSuggestions.contains(ev.target)) {
+        hideTitleSuggestions();
+      }
+    });
 
     el.tabs.forEach((btn, i) => {
       btn.addEventListener("click", () => {
@@ -547,7 +887,7 @@
 
     el.exportBtn.addEventListener("click", () => {
       try {
-        const payload = { kids: deriveKids(), books: books.map((b) => ({ id: b.id, kid: b.kid, title: b.title, author: b.author || "", dateFinished: b.dateFinished, rating: b.rating, notes: b.notes || "" })) };
+        const payload = { kids: deriveKids(), books: books.map((b) => ({ id: b.id, kid: b.kid, title: b.title, author: b.author || "", dateFinished: b.dateFinished, rating: b.rating, notes: b.notes || "", coverUrl: b.coverUrl || "" })) };
         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a"); a.href = url; a.download = "kids-reading-tracker.json"; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
@@ -611,5 +951,13 @@
 
   void init();
 })();
+
+
+
+
+
+
+
+
 
 

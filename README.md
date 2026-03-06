@@ -1,4 +1,4 @@
-﻿# Kids Reading Tracker
+# Kids Reading Tracker
 
 Static GitHub Pages app (plain HTML/CSS/JS) for tracking finished books.
 
@@ -85,3 +85,22 @@ Works on GitHub Pages with relative paths.
 `index.html` script order:
 1. Supabase CDN script
 2. `./app.js`
+
+## Reliable Google Books lookup (Edge Function proxy)
+The app now calls a Supabase Edge Function first for title suggestions:
+- Endpoint: `/functions/v1/google-books-lookup`
+- This avoids browser/network blocks against direct Google API calls from GitHub Pages.
+
+Function source is in:
+- `supabase/functions/google-books-lookup/index.ts`
+
+Deploy steps:
+1. Install and login to Supabase CLI.
+2. Link project:
+   - `supabase link --project-ref rzcpicnwtvwsspgdhgbb`
+3. Deploy function without JWT verification (app already sends anon key/session, but this keeps it publicly callable from Pages):
+   - `supabase functions deploy google-books-lookup --no-verify-jwt`
+
+Notes:
+- The function performs server-side fetches to Google Books and returns `{ items: [...] }`.
+- App fallback behavior: if function is unavailable, it tries direct Google API calls.
