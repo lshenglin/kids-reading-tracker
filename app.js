@@ -16,6 +16,7 @@
 
   let currentUserId = null;
   let currentAccessToken = "";
+  let lastBooksLoadedAt = null;
   let books = [];
   let activeTab = "Isa";
   let editingId = null;
@@ -60,8 +61,10 @@
     msg: document.getElementById("data-message"),
     authEmail: document.getElementById("auth-email"),
     authSend: document.getElementById("auth-send-link"),
+    authRefresh: document.getElementById("auth-refresh"),
     authSignOut: document.getElementById("auth-signout"),
     authStatus: document.getElementById("auth-status"),
+    authMeta: document.getElementById("auth-session-meta"),
     authHint: document.getElementById("auth-hint"),
     authRequired: Array.from(document.querySelectorAll(".requires-auth")),
     exportBtn: document.getElementById("export-btn"),
@@ -126,6 +129,56 @@
     el.authStatus.classList.toggle("error", !!isErr);
   }
 
+  function stripAuthParamsFromUrl() {
+    try {
+      const url = new URL(window.location.href);
+      const keys = ["code", "token_hash", "type", "access_token", "refresh_token", "expires_in", "expires_at"];
+      let changed = false;
+      keys.forEach((k) => {
+        if (url.searchParams.has(k)) {
+          url.searchParams.delete(k);
+          changed = true;
+        }
+      });
+      if ((url.hash || "").includes("access_token") || (url.hash || "").includes("refresh_token") || (url.hash || "").includes("type=")) {
+        url.hash = "";
+        changed = true;
+      }
+      if (changed) {
+        window.history.replaceState({}, document.title, url.toString());
+      }
+    } catch {
+      // no-op
+    }
+  }
+
+  function formatExpiry(session) {
+    const exp = session?.expires_at;
+    if (!exp) return "unknown";
+    return new Date(exp * 1000).toLocaleString();
+  }
+
+  function updateAuthMeta(session, loadState) {
+    if (!el.authMeta) return;
+    if (!session?.user?.id) {
+      el.authMeta.textContent = "Session: signed out";
+      return;
+    }
+    const loaded = lastBooksLoadedAt ? lastBooksLoadedAt.toLocaleString() : "not yet";
+    el.authMeta.textContent = `Session user: ${session.user.id.slice(0, 8)}... | Expires: ${formatExpiry(session)} | Books: ${books.length} | Last load: ${loaded} | State: ${loadState}`;
+  }
+
+
+  function withTimeout(promise, ms, message) {
+    let timer = null;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
   function updateAuthUi(session) {
     const loggedIn = !!session?.user?.id;
     if (el.authHint) {
@@ -134,6 +187,7 @@
         : "Use email magic link to access your cloud books from any device.";
     }
     if (el.authSend) el.authSend.classList.toggle("hidden", loggedIn);
+    if (el.authRefresh) el.authRefresh.classList.toggle("hidden", !loggedIn);
     if (el.authEmail) el.authEmail.disabled = loggedIn;
     if (el.authSignOut) el.authSignOut.classList.toggle("hidden", !loggedIn);
     el.authRequired.forEach((node) => node.classList.toggle("hidden", !loggedIn));
@@ -143,18 +197,33 @@
     updateAuthUi(session);
     if (!session?.user?.id) {
       books = [];
+      lastBooksLoadedAt = null;
       render();
       setAuthStatus("Sign in with magic link to load your cloud books.", false);
+      updateAuthMeta(session, "signed out");
       return;
     }
 
-    await loadCloudBooks();
-    if (localStorage.getItem(MIGRATED_FLAG_KEY) !== "1" && legacyBooks().length > 0) {
-      el.migrateBtn.classList.remove("hidden");
+    setAuthStatus("Signed in. Loading cloud books...", false);
+    updateAuthMeta(session, "loading");
+
+    try {
+      await withTimeout(loadCloudBooks(), 15000, "Timed out loading books. Check connection, then click Refresh Session.");
+      lastBooksLoadedAt = new Date();
+      if (localStorage.getItem(MIGRATED_FLAG_KEY) !== "1" && legacyBooks().length > 0) {
+        el.migrateBtn.classList.remove("hidden");
+      }
+      render();
+      clearMsg();
+      setAuthStatus(`Signed in. Loaded ${books.length} book(s).`, false);
+      updateAuthMeta(session, "loaded");
+    } catch (err) {
+      books = [];
+      render();
+      setAuthStatus(`Signed in, but failed to load books: ${err.message || "cloud error"}`, true);
+      updateAuthMeta(session, "load failed");
+      throw err;
     }
-    render();
-    clearMsg();
-    setAuthStatus("Signed in. Cloud books loaded.", false);
   }
 
   const rowToBook = (r) => ({
@@ -175,27 +244,41 @@
   }
 
   async function loadCloudBooks() {
-    let res = await supabase
-      .from("books")
-      .select("id,user_id,kid_name,title,author,date_finished,rating,notes,cover_url,created_at")
-      .eq("user_id", currentUserId)
-      .order("date_finished", { ascending: false })
-      .order("created_at", { ascending: false });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
 
-    if (res.error && isMissingCoverColumnError(res.error)) {
-      hasCoverUrlColumn = false;
-      res = await supabase
+    try {
+      let res = await supabase
         .from("books")
-        .select("id,user_id,kid_name,title,author,date_finished,rating,notes,created_at")
+        .select("id,user_id,kid_name,title,author,date_finished,rating,notes,cover_url,created_at")
         .eq("user_id", currentUserId)
         .order("date_finished", { ascending: false })
-        .order("created_at", { ascending: false });
-    } else if (!res.error) {
-      hasCoverUrlColumn = true;
-    }
+        .order("created_at", { ascending: false })
+        .abortSignal(controller.signal);
 
-    if (res.error) throw res.error;
-    books = (res.data || []).map(rowToBook);
+      if (res.error && isMissingCoverColumnError(res.error)) {
+        hasCoverUrlColumn = false;
+        res = await supabase
+          .from("books")
+          .select("id,user_id,kid_name,title,author,date_finished,rating,notes,created_at")
+          .eq("user_id", currentUserId)
+          .order("date_finished", { ascending: false })
+          .order("created_at", { ascending: false })
+          .abortSignal(controller.signal);
+      } else if (!res.error) {
+        hasCoverUrlColumn = true;
+      }
+
+      if (res.error) throw res.error;
+      books = (res.data || []).map(rowToBook);
+    } catch (err) {
+      if (err && (err.name === "AbortError" || String(err.message || "").toLowerCase().includes("aborted"))) {
+        throw new Error("Timed out loading books. Check connection, then click Refresh Session.");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   const deriveKids = () => {
@@ -853,6 +936,46 @@
     showMsg(`Migration complete. Moved ${rows.length} local book(s) to cloud.`, false);
   }
 
+  async function handleSendMagicLink() {
+    if (!el.authEmail) return;
+    const email = el.authEmail.value.trim();
+    if (!email) {
+      setAuthStatus("Enter an email address.", true);
+      el.authEmail.focus();
+      return;
+    }
+    try {
+      if (el.authSend) el.authSend.disabled = true;
+      const result = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: window.location.href.split("#")[0] }
+      });
+      if (result.error) throw result.error;
+      setAuthStatus("Magic link sent. Check your email inbox.", false);
+    } catch (err) {
+      setAuthStatus(`Failed to send magic link: ${err.message || "unknown error"}`, true);
+    } finally {
+      if (el.authSend) el.authSend.disabled = false;
+    }
+  }
+
+  async function handleSignOut() {
+    try {
+      if (el.authSignOut) el.authSignOut.disabled = true;
+      const res = await supabase.auth.signOut({ scope: "local" });
+      if (res.error) throw res.error;
+      currentUserId = null;
+      currentAccessToken = "";
+      books = [];
+      clearForm();
+      await applySession(null);
+      setAuthStatus("Signed out.", false);
+    } catch (err) {
+      setAuthStatus(`Sign out failed: ${err.message || "unknown error"}`, true);
+    } finally {
+      if (el.authSignOut) el.authSignOut.disabled = false;
+    }
+  }
   function wireUi() {
     el.date.value = todayIso();
 
@@ -878,41 +1001,32 @@
     el.cancel.addEventListener("click", clearForm);
 
     if (el.authSend && el.authEmail) {
-      el.authSend.addEventListener("click", async () => {
-        const email = el.authEmail.value.trim();
-        if (!email) {
-          setAuthStatus("Enter an email address.", true);
-          el.authEmail.focus();
-          return;
-        }
-        try {
-          const result = await supabase.auth.signInWithOtp({
-            email,
-            options: { emailRedirectTo: window.location.href.split("#")[0] }
-          });
-          if (result.error) throw result.error;
-          setAuthStatus("Magic link sent. Check your email inbox.", false);
-        } catch (err) {
-          setAuthStatus(`Failed to send magic link: ${err.message || "unknown error"}`, true);
-        }
+      el.authSend.addEventListener("click", () => {
+        void handleSendMagicLink();
       });
 
       el.authEmail.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter") {
           ev.preventDefault();
-          el.authSend.click();
+          void handleSendMagicLink();
         }
       });
     }
 
     if (el.authSignOut) {
-      el.authSignOut.addEventListener("click", async () => {
+      el.authSignOut.addEventListener("click", () => {
+        void handleSignOut();
+      });
+    }
+
+    if (el.authRefresh) {
+      el.authRefresh.addEventListener("click", async () => {
         try {
-          const res = await supabase.auth.signOut();
-          if (res.error) throw res.error;
-          setAuthStatus("Signed out.", false);
+          setAuthStatus("Refreshing session...", false);
+          const session = await withTimeout(refreshSession(), 8000, "Session refresh timed out.");
+          await withTimeout(applySession(session), 20000, "Session apply timed out.");
         } catch (err) {
-          setAuthStatus(`Sign out failed: ${err.message || "unknown error"}`, true);
+          setAuthStatus(`Session refresh failed: ${err.message || "unknown error"}`, true);
         }
       });
     }
@@ -926,6 +1040,30 @@
     });
 
     document.addEventListener("click", (ev) => {
+      const target = ev.target;
+      if (target instanceof HTMLElement) {
+        const authBtn = target.closest("#auth-signout, #auth-send-link, #auth-refresh");
+        if (authBtn) {
+          ev.preventDefault();
+          if (authBtn.id === "auth-signout") {
+            void handleSignOut();
+          } else if (authBtn.id === "auth-send-link") {
+            void handleSendMagicLink();
+          } else if (authBtn.id === "auth-refresh") {
+            void (async () => {
+              try {
+                setAuthStatus("Refreshing session...", false);
+                const session = await withTimeout(refreshSession(), 8000, "Session refresh timed out.");
+                await withTimeout(applySession(session), 20000, "Session apply timed out.");
+              } catch (err) {
+                setAuthStatus(`Session refresh failed: ${err.message || "unknown error"}`, true);
+              }
+            })();
+          }
+          return;
+        }
+      }
+
       if (ev.target !== el.title && !el.titleSuggestions.contains(ev.target)) {
         hideTitleSuggestions();
       }
@@ -1027,6 +1165,7 @@
   }
 
   async function init() {
+    stripAuthParamsFromUrl();
     wireUi();
     if (!supabase) {
       showMsg("Supabase client failed to load. Check connection and reload.", true);

@@ -584,3 +584,9 @@ textarea:focus-visible,
   margin: 0.25rem 0 0.75rem;
   color: var(--muted);
 }
+
+.auth-meta {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
