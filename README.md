@@ -31,39 +31,45 @@ create table if not exists public.books (
 );
 ```
 
-## Required RLS
-Enable RLS and add user-scoped policies:
+## Required RLS (Family Shared Library)
+Enable RLS and allow all authenticated users to read/write the same library rows.
 
 ```sql
 alter table public.books enable row level security;
 
-create policy "books_select_own"
+-- remove old user-scoped policies
+drop policy if exists "books_select_own" on public.books;
+drop policy if exists "books_insert_own" on public.books;
+drop policy if exists "books_update_own" on public.books;
+drop policy if exists "books_delete_own" on public.books;
+
+create policy "books_select_shared"
 on public.books
 for select
-using (auth.uid() = user_id);
+using (auth.role() = 'authenticated');
 
-create policy "books_insert_own"
+create policy "books_insert_shared"
 on public.books
 for insert
-with check (auth.uid() = user_id);
+with check (auth.role() = 'authenticated');
 
-create policy "books_update_own"
+create policy "books_update_shared"
 on public.books
 for update
-using (auth.uid() = user_id)
-with check (auth.uid() = user_id);
+using (auth.role() = 'authenticated')
+with check (auth.role() = 'authenticated');
 
-create policy "books_delete_own"
+create policy "books_delete_shared"
 on public.books
 for delete
-using (auth.uid() = user_id);
+using (auth.role() = 'authenticated');
 ```
 
 ## Auth mode
 The app uses Supabase Email Magic Link sign-in:
 - User enters email and receives a sign-in link.
 - After opening the link, session is restored and cloud books load.
-- All book rows remain scoped by `user_id` (`auth.uid()`).
+- All signed-in users share one library and can read/write the same rows.
 
 Required Supabase Auth settings:
 - Enable provider: Email
@@ -72,7 +78,7 @@ Required Supabase Auth settings:
   - GitHub Pages URL (your deployed site)
   - Local URL (for local testing)
 
-Note: users can access the same cloud books across devices/browsers by signing into the same email account.
+Note: any authenticated user can edit shared data.
 
 ## LocalStorage usage
 LocalStorage is only used for:
@@ -93,10 +99,8 @@ Works on GitHub Pages with relative paths.
 1. Supabase CDN script
 2. `./app.js`
 
-## Reliable Google Books lookup (Edge Function proxy)
-The app now calls a Supabase Edge Function first for title suggestions:
-- Endpoint: `/functions/v1/google-books-lookup`
-- This avoids browser/network blocks against direct Google API calls from GitHub Pages.
+## Google Books lookup
+The app tries direct Google Books lookup first, then falls back to the Supabase Edge Function if direct access fails.
 
 Function source is in:
 - `supabase/functions/google-books-lookup/index.ts`
@@ -105,9 +109,5 @@ Deploy steps:
 1. Install and login to Supabase CLI.
 2. Link project:
    - `supabase link --project-ref rzcpicnwtvwsspgdhgbb`
-3. Deploy function without JWT verification (app already sends anon key/session, but this keeps it publicly callable from Pages):
+3. Deploy function:
    - `supabase functions deploy google-books-lookup --no-verify-jwt`
-
-Notes:
-- The function performs server-side fetches to Google Books and returns `{ items: [...] }`.
-- App fallback behavior: if function is unavailable, it tries direct Google API calls.

@@ -328,7 +328,6 @@
       let res = await supabase
         .from("books")
         .select("id,user_id,kid_name,title,author,date_finished,rating,notes,cover_url,created_at")
-        .eq("user_id", currentUserId)
         .order("date_finished", { ascending: false })
         .order("created_at", { ascending: false })
         .abortSignal(controller.signal);
@@ -338,7 +337,6 @@
         res = await supabase
           .from("books")
           .select("id,user_id,kid_name,title,author,date_finished,rating,notes,created_at")
-          .eq("user_id", currentUserId)
           .order("date_finished", { ascending: false })
           .order("created_at", { ascending: false })
           .abortSignal(controller.signal);
@@ -1516,6 +1514,8 @@
   }
   void init();
 })();
+
+
 
 
 
