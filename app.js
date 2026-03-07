@@ -171,6 +171,18 @@
     }
   }
 
+  async function exchangeAuthCodeIfPresent() {
+    try {
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get("code");
+      if (!code) return false;
+      const { error } = await supabase.auth.exchangeCodeForSession(code);
+      if (error) throw error;
+      return true;
+    } catch {
+      return false;
+    }
+  }
   function formatExpiry(session) {
     const exp = session?.expires_at;
     if (!exp) return "unknown";
@@ -1471,11 +1483,16 @@
   }
 
   async function init() {
-    stripAuthParamsFromUrl();
     wireUi();
     if (!supabase) {
       showMsg("Supabase client failed to load. Check connection and reload.", true);
       return;
+    }
+
+    try {
+      await exchangeAuthCodeIfPresent();
+    } catch {
+      // no-op: session refresh below will surface errors if needed
     }
 
     supabase.auth.onAuthStateChange(async (_event, session) => {
@@ -1491,6 +1508,7 @@
     try {
       const session = await refreshSession();
       await applySession(session);
+      stripAuthParamsFromUrl();
     } catch (err) {
       render();
       showMsg(`Cloud setup failed: ${err.message || "unknown error"}`, true);
@@ -1498,6 +1516,8 @@
   }
   void init();
 })();
+
+
 
 
 
