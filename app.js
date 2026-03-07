@@ -20,7 +20,8 @@
   let books = [];
   let activeTab = "Isa";
   let editingId = null;
-  let activeView = localStorage.getItem(VIEW_KEY) === "shelf" ? "shelf" : "list";
+  let activeView = localStorage.getItem(VIEW_KEY) === "list" ? "list" : "shelf";
+  let activeSection = "books";
   let modalBookId = null;
   let hasCoverUrlColumn = true;
   let formCoverUrl = "";
@@ -37,6 +38,9 @@
   let lookupActiveIndex = -1;
   let lookupAbortController = null;
   let lookupRequestId = 0;
+  const LOOKUP_FETCH_MAX = 40;
+  const LOOKUP_VISIBLE_MAX = 20;
+  const LOOKUP_POOL_MAX = 200;
 
   const el = {
     form: document.getElementById("book-form"),
@@ -54,11 +58,26 @@
     search: document.getElementById("searchFilter"),
     year: document.getElementById("yearFilter"),
     ratingFilter: document.getElementById("ratingFilter"),
+    navAdd: document.getElementById("nav-add"),
+    navSearch: document.getElementById("nav-search"),
+    navExport: document.getElementById("nav-export"),
+    navCard: document.getElementById("nav-card"),
+    addCard: document.getElementById("add-card"),
+    searchCard: document.getElementById("search-card"),
+    exportCard: document.getElementById("export-card"),
+    booksCard: document.getElementById("books-card"),
+    filtersPanel: document.getElementById("filters-panel"),
+    dataToolsPanel: document.getElementById("data-tools-panel"),
     list: document.getElementById("book-list"),
     shelf: document.getElementById("bookshelf-grid"),
     stats: document.getElementById("stats"),
     chart: document.getElementById("month-chart"),
     msg: document.getElementById("data-message"),
+    authCard: document.getElementById("auth-card"),
+    authPill: document.getElementById("auth-pill"),
+    authPillText: document.getElementById("auth-pill-text"),
+    authRefreshHeader: document.getElementById("auth-refresh-header"),
+    authSignOutHeader: document.getElementById("auth-signout-header"),
     authEmail: document.getElementById("auth-email"),
     authSend: document.getElementById("auth-send-link"),
     authRefresh: document.getElementById("auth-refresh"),
@@ -179,6 +198,44 @@
     });
   }
 
+
+  function applySectionMode(loggedIn) {
+    const sections = {
+      books: el.booksCard,
+      add: el.addCard,
+      search: el.searchCard,
+      export: el.exportCard
+    };
+
+    if (!loggedIn) {
+      Object.values(sections).forEach((node) => node && node.classList.add("hidden"));
+    } else {
+      Object.entries(sections).forEach(([key, node]) => {
+        if (!node) return;
+        node.classList.toggle("hidden", key !== activeSection);
+      });
+    }
+
+    const navMap = {
+      add: el.navAdd,
+      search: el.navSearch,
+      export: el.navExport
+    };
+    Object.entries(navMap).forEach(([key, btn]) => {
+      if (!btn) return;
+      const on = loggedIn && activeSection === key;
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.textContent = on ? "books" : key;
+    });
+  }
+
+  function setActiveSection(next) {
+    const key = next === "add" || next === "search" || next === "export" ? next : "books";
+    activeSection = activeSection === key && key !== "books" ? "books" : key;
+    applySectionMode(!!currentUserId);
+  }
+
   function updateAuthUi(session) {
     const loggedIn = !!session?.user?.id;
     if (el.authHint) {
@@ -186,11 +243,19 @@
         ? `Signed in as ${session.user.email || "your account"}.`
         : "Use email magic link to access your cloud books from any device.";
     }
+    if (el.authPillText) {
+      el.authPillText.textContent = loggedIn
+        ? `Signed in: ${session.user.email || session.user.id.slice(0, 8) + "..."}`
+        : "Signed out";
+    }
+    if (el.authCard) el.authCard.classList.toggle("hidden", loggedIn);
+    if (el.authPill) el.authPill.classList.toggle("hidden", !loggedIn);
     if (el.authSend) el.authSend.classList.toggle("hidden", loggedIn);
     if (el.authRefresh) el.authRefresh.classList.toggle("hidden", !loggedIn);
     if (el.authEmail) el.authEmail.disabled = loggedIn;
     if (el.authSignOut) el.authSignOut.classList.toggle("hidden", !loggedIn);
-    el.authRequired.forEach((node) => node.classList.toggle("hidden", !loggedIn));
+    if (el.navCard) el.navCard.classList.toggle("hidden", !loggedIn);
+    applySectionMode(loggedIn);
   }
 
   async function applySession(session) {
@@ -372,7 +437,7 @@
   }
 
   async function fetchCoverByQuery(query) {
-    const url = `https://www.googleapis.com/books/v1/volumes?maxResults=5&printType=books&fields=items(volumeInfo(imageLinks))&q=${encodeURIComponent(query)}`;
+    const url = `https://www.googleapis.com/books/v1/volumes?maxResults=${LOOKUP_FETCH_MAX}&printType=books&fields=items(volumeInfo(imageLinks))&q=${encodeURIComponent(query)}`;
     const r = await fetch(url);
     if (!r.ok) return null;
     const data = await r.json();
@@ -494,6 +559,189 @@
       el.title.removeAttribute("aria-activedescendant");
     }
   }
+
+  function normalizeLookupText(value) {
+    return String(value || "")
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  }
+
+  function tokenizeLookup(value) {
+    const normalized = normalizeLookupText(value);
+    return normalized ? normalized.split(/\s+/).filter(Boolean) : [];
+  }
+
+  function significantLookupTokens(query) {
+    return tokenizeLookup(query).filter((t) => t.length > 2 && !["and", "the", "for", "with", "from", "into"].includes(t));
+  }
+
+  function uniqueStrings(values) {
+    const out = [];
+    values.forEach((value) => {
+      const v = String(value || "").trim();
+      if (v && !out.includes(v)) out.push(v);
+    });
+    return out;
+  }
+
+  function buildLookupQueries(query) {
+    const tokens = tokenizeLookup(query);
+    const sigTokens = significantLookupTokens(query);
+    if (!tokens.length) return [];
+
+    const phrase = tokens.join(" ");
+    const raw = String(query || "").trim();
+    const noStops = tokens.filter((t) => !["a", "an", "and", "the", "of", "to", "in"].includes(t));
+    const ampPhrase = phrase.replace(/\band\b/g, "&");
+
+    const variants = [
+      raw ? `\"${raw}\"` : "",
+      `intitle:\"${phrase}\"`,
+      `intitle:${phrase}`,
+      `allintitle:${phrase}`,
+      phrase,
+      raw,
+      ampPhrase !== phrase ? `intitle:${ampPhrase}` : "",
+      noStops.length ? `intitle:${noStops.join(" ")}` : "",
+      noStops.length ? noStops.join(" ") : ""
+    ];
+
+    if (sigTokens.length >= 2) {
+      variants.push(
+        sigTokens.map((t) => `intitle:${t}`).join(" "),
+        sigTokens.map((t) => `\"${t}\"`).join(" ")
+      );
+    }
+
+    const hasAvatar = tokens.includes("avatar");
+    const hasSmoke = tokens.includes("smoke");
+    const hasShadow = tokens.includes("shadow") || tokens.includes("shadows");
+    if (hasAvatar && hasSmoke && hasShadow) {
+      variants.unshift(
+        'intitle:"avatar the last airbender smoke and shadow omnibus"',
+        'intitle:"avatar the last airbender smoke and shadow"',
+        'intitle:"smoke and shadow omnibus" avatar',
+        'intitle:"smoke and shadow" "last airbender"'
+      );
+      variants.push(
+        'intitle:"avatar last airbender smoke shadow"',
+        'avatar "last airbender" "smoke and shadow"',
+        'intitle:"smoke and shadow" avatar'
+      );
+    }
+
+    return uniqueStrings(variants);
+  }
+
+  function scoreLookupItem(item, query) {
+    const queryTokens = tokenizeLookup(query);
+    const sigTokens = significantLookupTokens(query);
+    if (!queryTokens.length) return -999;
+
+    const volume = item?.volumeInfo || {};
+    const title = normalizeLookupText([volume.title, volume.subtitle].filter(Boolean).join(" "));
+    const authors = normalizeLookupText(Array.isArray(volume.authors) ? volume.authors.join(" ") : "");
+
+    let score = 0;
+    const joined = queryTokens.join(" ");
+    if (joined && title.includes(joined)) score += 20;
+
+    let titleHits = 0;
+    queryTokens.forEach((token) => {
+      if (title.includes(token)) {
+        titleHits += 1;
+        score += 4;
+      } else if (authors.includes(token)) {
+        score += 1;
+      } else {
+        score -= 1;
+      }
+    });
+
+    const allSigInTitle = sigTokens.length > 0 && sigTokens.every((t) => title.includes(t));
+    if (allSigInTitle) score += 40;
+    if (title.startsWith(queryTokens[0])) score += 2;
+    return score + titleHits;
+  }
+
+  function matchCountInTitle(item, sigTokens) {
+    const volume = item?.volumeInfo || {};
+    const title = normalizeLookupText([volume.title, volume.subtitle].filter(Boolean).join(" "));
+    let count = 0;
+    sigTokens.forEach((t) => {
+      if (title.includes(t)) count += 1;
+    });
+    return count;
+  }
+
+  function lookupSearchText(item) {
+    const volume = item?.volumeInfo || {};
+    const title = [volume.title, volume.subtitle].filter(Boolean).join(" ");
+    const authors = Array.isArray(volume.authors) ? volume.authors.join(" ") : "";
+    const description = volume.description || "";
+    const categories = Array.isArray(volume.categories) ? volume.categories.join(" ") : "";
+    const publisher = volume.publisher || "";
+    const series = volume.seriesInfo?.bookDisplayNumber || volume.seriesInfo?.seriesBookType || "";
+    return normalizeLookupText(`${title} ${authors} ${description} ${categories} ${publisher} ${series}`);
+  }
+
+  function titleTokenMatchCount(item, sigTokens) {
+    if (!sigTokens.length) return 0;
+    const volume = item?.volumeInfo || {};
+    const title = normalizeLookupText([volume.title, volume.subtitle].filter(Boolean).join(" "));
+    let count = 0;
+    sigTokens.forEach((t) => {
+      if (title.includes(t)) count += 1;
+    });
+    return count;
+  }
+
+  function allowByTitleTokens(matchCount, sigTokens) {
+    if (sigTokens.length <= 1) return true;
+    if (sigTokens.length === 2) return matchCount >= 1;
+    return matchCount >= 2;
+  }
+
+  function rankLookupItems(items, query) {
+    const sigTokens = significantLookupTokens(query);
+
+    return (Array.isArray(items) ? items : [])
+      .map((item, index) => {
+        const volume = item?.volumeInfo || {};
+        const title = normalizeLookupText([volume.title, volume.subtitle].filter(Boolean).join(" "));
+        const allSigInTitle = sigTokens.length > 0 && sigTokens.every((t) => title.includes(t));
+        const titleMatchCount = matchCountInTitle(item, sigTokens);
+        const titleTokenMatches = titleTokenMatchCount(item, sigTokens);
+        return { item, index, allSigInTitle, titleMatchCount, titleTokenMatches, score: scoreLookupItem(item, query) };
+      })
+      .filter((x) => allowByTitleTokens(x.titleTokenMatches, sigTokens))
+      .sort((a, b) => {
+        if (a.allSigInTitle !== b.allSigInTitle) return a.allSigInTitle ? -1 : 1;
+        if (a.titleTokenMatches !== b.titleTokenMatches) return b.titleTokenMatches - a.titleTokenMatches;
+        if (a.titleMatchCount !== b.titleMatchCount) return b.titleMatchCount - a.titleMatchCount;
+        if (a.score !== b.score) return b.score - a.score;
+        return a.index - b.index;
+      })
+      .map((x) => x.item)
+      .slice(0, LOOKUP_VISIBLE_MAX);
+  }
+
+  function mergeLookupItems() {
+    const merged = {};
+    for (let i = 0; i < arguments.length; i += 1) {
+      const list = Array.isArray(arguments[i]) ? arguments[i] : [];
+      list.forEach((item) => {
+        const volume = item?.volumeInfo || {};
+        const fallback = `${normalizeLookupText(volume.title)}|${normalizeLookupText((volume.authors || []).join(" "))}`;
+        const key = String(item?.id || "") || fallback;
+        if (key && !merged[key]) merged[key] = item;
+      });
+    }
+    return Object.values(merged).slice(0, LOOKUP_POOL_MAX);
+  }
 
   async function lookupViaSupabaseFunction(query, signal) {
     const headers = {
@@ -507,14 +755,14 @@
     const response = await fetch(LOOKUP_FUNCTION_URL, {
       method: "POST",
       headers,
-      body: JSON.stringify({ query, maxResults: 5 }),
+      body: JSON.stringify({ query, maxResults: LOOKUP_FETCH_MAX }),
       signal,
       cache: "no-store"
     });
 
     if (!response.ok) return { ok: false, items: [] };
     const payload = await response.json();
-    const items = Array.isArray(payload?.items) ? payload.items.slice(0, 5) : [];
+    const items = Array.isArray(payload?.items) ? payload.items : [];
     return { ok: true, items };
   }
 
@@ -523,27 +771,48 @@
       "https://books.googleapis.com/books/v1/volumes",
       "https://www.googleapis.com/books/v1/volumes"
     ];
-    const queryModes = ["intitle:", ""];
-    const params = "maxResults=5";
-
-    let items = [];
+    const queries = buildLookupQueries(query);
+    const starts = [0, 20, 40, 60, 80];
+    const byId = {};
     let ok = false;
-    for (const base of bases) {
-      for (const mode of queryModes) {
-        const q = mode ? `${mode}${query}` : query;
-        const url = `${base}?q=${encodeURIComponent(q)}&${params}`;
-        const response = await fetch(url, { signal, cache: "no-store" });
-        if (!response.ok) continue;
-        ok = true;
-        const data = await response.json();
-        items = Array.isArray(data?.items) ? data.items.slice(0, 5) : [];
-        if (items.length) break;
+
+    for (const q of queries) {
+      for (const startIndex of starts) {
+        let pageItems = [];
+        for (const base of bases) {
+          const url = `${base}?q=${encodeURIComponent(q)}&maxResults=${LOOKUP_FETCH_MAX}&startIndex=${startIndex}&printType=books`;
+          try {
+            const response = await fetch(url, { signal, cache: "no-store" });
+            if (!response.ok) continue;
+            ok = true;
+            const data = await response.json();
+            const items = Array.isArray(data?.items) ? data.items : [];
+            if (!items.length) continue;
+            pageItems = items;
+            break;
+          } catch (err) {
+            if (err && err.name === "AbortError") throw err;
+          }
+        }
+
+        pageItems.forEach((item) => {
+          const key = String(item?.id || "");
+          if (key && !byId[key]) byId[key] = item;
+        });
+
+        if (Object.keys(byId).length >= LOOKUP_POOL_MAX) {
+          return { ok, items: Object.values(byId) };
+        }
+
+        if (pageItems.length < LOOKUP_FETCH_MAX) {
+          break;
+        }
       }
-      if (items.length) break;
     }
 
-    return { ok, items };
+    return { ok, items: Object.values(byId) };
   }
+
   async function fetchTitleSuggestions(query, requestId, signal) {
     const key = query.trim().toLowerCase();
 
@@ -557,9 +826,12 @@
     }
 
     try {
-      let result = await lookupViaSupabaseFunction(query, signal);
-      if (!result.ok) {
-        result = await lookupDirectGoogle(query, signal);
+      let result = await lookupDirectGoogle(query, signal);
+      if (!result.ok || !Array.isArray(result.items) || result.items.length === 0) {
+        const edge = await lookupViaSupabaseFunction(query, signal);
+        if (edge.ok) {
+          result = edge;
+        }
       }
 
       if (!result.ok) {
@@ -569,7 +841,7 @@
         return;
       }
 
-      const results = Array.isArray(result.items) ? result.items.slice(0, 5) : [];
+      const results = rankLookupItems(result.items, query);
 
       if (results.length) {
         lookupCache[key] = results;
@@ -853,11 +1125,11 @@
     el.cancel.classList.add("hidden");
     hideTitleSuggestions();
   }
-
   function startEdit(book) {
     closeModal();
     hideTitleSuggestions();
     editingId = book.id;
+    setActiveSection("add");
     el.kid.value = book.kid;
     el.title.value = book.title;
     el.author.value = book.author || "";
@@ -1031,6 +1303,40 @@
       });
     }
 
+    if (el.authSignOutHeader) {
+      el.authSignOutHeader.addEventListener("click", () => {
+        void handleSignOut();
+      });
+    }
+
+    if (el.authRefreshHeader) {
+      el.authRefreshHeader.addEventListener("click", async () => {
+        try {
+          setAuthStatus("Refreshing session...", false);
+          const session = await withTimeout(refreshSession(), 8000, "Session refresh timed out.");
+          await withTimeout(applySession(session), 20000, "Session apply timed out.");
+        } catch (err) {
+          setAuthStatus(`Session refresh failed: ${err.message || "unknown error"}`, true);
+        }
+      });
+    }
+    if (el.navAdd) {
+      el.navAdd.addEventListener("click", () => {
+        setActiveSection("add");
+      });
+    }
+
+    if (el.navSearch) {
+      el.navSearch.addEventListener("click", () => {
+        setActiveSection("search");
+      });
+    }
+
+    if (el.navExport) {
+      el.navExport.addEventListener("click", () => {
+        setActiveSection("export");
+      });
+    }
     el.title.addEventListener("input", scheduleTitleLookup);
     el.title.addEventListener("keydown", onTitleKeyDown);
     el.title.addEventListener("blur", () => {
@@ -1042,14 +1348,14 @@
     document.addEventListener("click", (ev) => {
       const target = ev.target;
       if (target instanceof HTMLElement) {
-        const authBtn = target.closest("#auth-signout, #auth-send-link, #auth-refresh");
+        const authBtn = target.closest("#auth-signout, #auth-send-link, #auth-refresh, #auth-signout-header, #auth-refresh-header");
         if (authBtn) {
           ev.preventDefault();
-          if (authBtn.id === "auth-signout") {
+          if (authBtn.id === "auth-signout" || authBtn.id === "auth-signout-header") {
             void handleSignOut();
           } else if (authBtn.id === "auth-send-link") {
             void handleSendMagicLink();
-          } else if (authBtn.id === "auth-refresh") {
+          } else if (authBtn.id === "auth-refresh" || authBtn.id === "auth-refresh-header") {
             void (async () => {
               try {
                 setAuthStatus("Refreshing session...", false);
@@ -1095,10 +1401,10 @@
 
     el.views.forEach((btn) => {
       btn.addEventListener("click", () => {
-        activeView = btn.dataset.view === "shelf" ? "shelf" : "list";
+        activeView = btn.dataset.view === "list" ? "list" : "shelf";
         localStorage.setItem(VIEW_KEY, activeView);
         el.views.forEach((b) => {
-          const a = b === btn;
+          const a = b.dataset.view === activeView;
           b.classList.toggle("active", a);
           b.setAttribute("aria-pressed", a ? "true" : "false");
         });
@@ -1192,6 +1498,47 @@
   }
   void init();
 })();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

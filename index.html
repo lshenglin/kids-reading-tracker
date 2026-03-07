@@ -8,8 +8,22 @@
 </head>
 <body>
   <header class="site-header">
-    <h1>Kids Reading Tracker</h1>
-    <p>Track finished books for Isa and Josh.</p>
+    <div class="header-title">
+      <h1>Kids Reading Tracker</h1>
+      <p>Track finished books for Isa and Josh.</p>
+    </div>
+    <div class="header-controls">
+      <div id="auth-pill" class="auth-pill hidden" aria-live="polite">
+        <span id="auth-pill-text">Signed in</span>
+        <button type="button" id="auth-refresh-header" class="secondary">Refresh</button>
+        <button type="button" id="auth-signout-header" class="secondary">Sign Out</button>
+      </div>
+      <div id="nav-card" class="section-nav hidden" role="group" aria-label="Sections">
+        <button type="button" id="nav-add" class="secondary" aria-pressed="false">add</button>
+        <button type="button" id="nav-search" class="secondary" aria-pressed="false">search</button>
+        <button type="button" id="nav-export" class="secondary" aria-pressed="false">export</button>
+      </div>
+    </div>
   </header>
 
   <main class="container">
@@ -31,8 +45,33 @@
       <p id="auth-session-meta" class="auth-meta" aria-live="polite"></p>
     </section>
 
-    <section class="card requires-auth">
-      <h2>Add Finished Book</h2>
+    <section class="card requires-auth" id="books-card">
+      <div class="toolbar-row">
+        <div class="tabs" role="tablist" aria-label="Kid tabs">
+          <button class="tab active" data-tab="Isa" role="tab" aria-selected="true">Isa</button>
+          <button class="tab" data-tab="Josh" role="tab" aria-selected="false">Josh</button>
+          <button class="tab" data-tab="All" role="tab" aria-selected="false">All</button>
+        </div>
+        <div class="view-toggle" role="group" aria-label="View mode">
+          <button type="button" class="view-btn" data-view="shelf" aria-pressed="false">Bookshelf</button>
+          <button type="button" class="view-btn" data-view="list" aria-pressed="false">List</button>
+        </div>
+      </div>
+
+      <div id="bookshelf-grid" class="bookshelf-grid hidden" aria-live="polite"></div>
+      <ul id="book-list" class="book-list hidden" aria-live="polite"></ul>
+
+      <p id="data-message" class="data-message hidden" role="status" aria-live="polite"></p>
+
+      <div class="stats" id="stats"></div>
+      <section class="chart-block" aria-label="Last six months finished books chart">
+        <h3 class="chart-title">Last 6 Months Finished</h3>
+        <div id="month-chart" class="month-chart" role="img" aria-label="Books finished in the last six months"></div>
+      </section>
+    </section>
+
+    <section class="card requires-auth hidden" id="add-card">
+      <h2>Add</h2>
       <form id="book-form" class="book-form">
         <div class="field">
           <label for="kid">Kid</label>
@@ -75,20 +114,9 @@
       </form>
     </section>
 
-    <section class="card requires-auth">
-      <h2>Books</h2>
-      <div class="tabs" role="tablist" aria-label="Kid tabs">
-        <button class="tab active" data-tab="Isa" role="tab" aria-selected="true">Isa</button>
-        <button class="tab" data-tab="Josh" role="tab" aria-selected="false">Josh</button>
-        <button class="tab" data-tab="All" role="tab" aria-selected="false">All</button>
-      </div>
-
-      <div class="view-toggle" role="group" aria-label="View mode">
-        <button type="button" class="view-btn active" data-view="list" aria-pressed="true">List</button>
-        <button type="button" class="view-btn" data-view="shelf" aria-pressed="false">Bookshelf</button>
-      </div>
-
-      <div class="filters" aria-label="Book filters">
+    <section class="card requires-auth hidden" id="search-card">
+      <h2>Search</h2>
+      <div id="filters-panel" class="filters" aria-label="Book filters">
         <div class="field">
           <label for="searchFilter">Search</label>
           <input id="searchFilter" type="search" placeholder="Title, author, notes">
@@ -109,24 +137,16 @@
           </select>
         </div>
       </div>
+    </section>
 
-      <div class="data-tools" aria-label="Data tools">
+    <section class="card requires-auth hidden" id="export-card">
+      <h2>Export</h2>
+      <div id="data-tools-panel" class="data-tools" aria-label="Data tools">
         <button type="button" id="export-btn">Export JSON</button>
         <button type="button" id="import-btn" class="secondary">Import JSON</button>
         <button type="button" id="migrate-btn" class="secondary hidden">Migrate local data to cloud</button>
         <input id="import-file" type="file" accept="application/json,.json" class="hidden" aria-hidden="true">
       </div>
-
-      <p id="data-message" class="data-message hidden" role="status" aria-live="polite"></p>
-
-      <div class="stats" id="stats"></div>
-      <section class="chart-block" aria-label="Last six months finished books chart">
-        <h3 class="chart-title">Last 6 Months Finished</h3>
-        <div id="month-chart" class="month-chart" role="img" aria-label="Books finished in the last six months"></div>
-      </section>
-
-      <ul id="book-list" class="book-list" aria-live="polite"></ul>
-      <div id="bookshelf-grid" class="bookshelf-grid hidden" aria-live="polite"></div>
     </section>
   </main>
 
@@ -148,5 +168,3 @@
   <script src="./app.js"></script>
 </body>
 </html>
-
-
