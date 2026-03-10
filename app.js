@@ -25,6 +25,11 @@
   let modalBookId = null;
   let hasCoverUrlColumn = true;
   let formCoverUrl = "";
+  let insightsKid = BASE_KIDS[0];
+
+  const insightsCache = {};
+  let insightsAbortController = null;
+  let insightsRequestId = 0;
 
   const coverCache = {};
   const coverPending = {};
@@ -61,10 +66,12 @@
     navAdd: document.getElementById("nav-add"),
     navSearch: document.getElementById("nav-search"),
     navExport: document.getElementById("nav-export"),
+    navInsights: document.getElementById("nav-insights"),
     navCard: document.getElementById("nav-card"),
     addCard: document.getElementById("add-card"),
     searchCard: document.getElementById("search-card"),
     exportCard: document.getElementById("export-card"),
+    insightsCard: document.getElementById("insights-card"),
     booksCard: document.getElementById("books-card"),
     filtersPanel: document.getElementById("filters-panel"),
     dataToolsPanel: document.getElementById("data-tools-panel"),
@@ -90,6 +97,13 @@
     importBtn: document.getElementById("import-btn"),
     migrateBtn: document.getElementById("migrate-btn"),
     file: document.getElementById("import-file"),
+    insightsKid: document.getElementById("insights-kid"),
+    insightsRefresh: document.getElementById("insights-refresh"),
+    insightsLevelBadge: document.getElementById("insights-level-badge"),
+    insightsLevelSummary: document.getElementById("insights-level-summary"),
+    insightsSignals: document.getElementById("insights-signals"),
+    insightsRecStatus: document.getElementById("insights-rec-status"),
+    insightsRecs: document.getElementById("insights-recs"),
     modal: document.getElementById("book-modal"),
     modalClose: document.getElementById("modal-close"),
     modalTitle: document.getElementById("modal-title"),
@@ -216,7 +230,8 @@
       books: el.booksCard,
       add: el.addCard,
       search: el.searchCard,
-      export: el.exportCard
+      export: el.exportCard,
+      insights: el.insightsCard
     };
 
     if (!loggedIn) {
@@ -231,21 +246,29 @@
     const navMap = {
       add: el.navAdd,
       search: el.navSearch,
-      export: el.navExport
+      export: el.navExport,
+      insights: el.navInsights
+    };
+    const navLabels = {
+      add: "add",
+      search: "search",
+      export: "export",
+      insights: "ideas"
     };
     Object.entries(navMap).forEach(([key, btn]) => {
       if (!btn) return;
       const on = loggedIn && activeSection === key;
       btn.classList.toggle("active", on);
       btn.setAttribute("aria-pressed", on ? "true" : "false");
-      btn.textContent = on ? "books" : key;
+      btn.textContent = on ? "books" : (navLabels[key] || key);
     });
   }
 
   function setActiveSection(next) {
-    const key = next === "add" || next === "search" || next === "export" ? next : "books";
+    const key = next === "add" || next === "search" || next === "export" || next === "insights" ? next : "books";
     activeSection = activeSection === key && key !== "books" ? "books" : key;
     applySectionMode(!!currentUserId);
+    if (activeSection === "insights" && currentUserId) void ensureInsightsRecommendations(false);
   }
 
   function updateAuthUi(session) {
@@ -387,6 +410,352 @@
     });
   }
 
+
+  function syncInsightsKid(kids) {
+    const options = kids.filter((kid) => kid && kid !== "All");
+    if (!options.length || !el.insightsKid) return;
+
+    if (activeTab !== "All" && options.includes(activeTab)) {
+      insightsKid = activeTab;
+    } else if (!options.includes(insightsKid)) {
+      insightsKid = options[0];
+    }
+
+    el.insightsKid.innerHTML = options.map((kid) => `<option value="${kid}">${kid}</option>`).join("");
+    el.insightsKid.value = insightsKid;
+  }
+
+  function booksForInsightsKid() {
+    return books.filter((book) => book.kid === insightsKid).sort(byDateDesc);
+  }
+
+  function topValues(values) {
+    const counts = {};
+    values.forEach((value) => {
+      const key = String(value || "").trim();
+      if (!key) return;
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([value, count]) => ({ value, count }));
+  }
+
+  function formatList(values) {
+    if (!values.length) return "";
+    if (values.length === 1) return values[0];
+    if (values.length === 2) return `${values[0]} and ${values[1]}`;
+    return `${values.slice(0, -1).join(", ")}, and ${values[values.length - 1]}`;
+  }
+
+  function estimateReadingLevel(history) {
+    if (!history.length) {
+      return {
+        key: "unknown",
+        label: "Waiting for history",
+        summary: "Add a few finished books first. The estimate improves once there is a pattern to read from.",
+        signals: []
+      };
+    }
+
+    const combinedText = history
+      .map((book) => `${book.title || ""} ${book.author || ""} ${book.notes || ""}`.toLowerCase())
+      .join(" ");
+
+    const stages = {
+      early: {
+        label: "Early Reader",
+        score: 0,
+        hits: [/level\s*[12]/g, /step into reading/g, /i can read/g, /phonics/g, /bob books/g, /elephant\s*&?\s*piggie/g, /frog and toad/g, /biscuit/g]
+      },
+      growing: {
+        label: "Growing Chapter-Book Reader",
+        score: 0,
+        hits: [/level\s*[34]/g, /graphic novel/g, /chapter book/g, /magic tree house/g, /princess in black/g, /dragon masters/g, /dog man/g, /bad guys/g, /owl diaries/g, /mercy watson/g]
+      },
+      independent: {
+        label: "Independent Middle-Grade Reader",
+        score: 0,
+        hits: [/percy jackson/g, /harry potter/g, /wings of fire/g, /warriors/g, /keeper of the lost cities/g, /land of stories/g, /hobbit/g, /middle grade/g, /fantasy adventure/g]
+      }
+    };
+
+    Object.values(stages).forEach((stage) => {
+      stage.hits.forEach((pattern) => {
+        const matches = combinedText.match(pattern);
+        if (matches) stage.score += matches.length * 3;
+      });
+    });
+
+    const rated = history.filter((book) => Number(book.rating) >= 4).length;
+    const recent = history.filter((book) => {
+      if (!book.dateFinished) return false;
+      const finished = new Date(book.dateFinished + "T00:00:00");
+      const ageDays = (Date.now() - finished.getTime()) / 86400000;
+      return ageDays <= 180;
+    }).length;
+    const titleWordAverage = history.reduce((sum, book) => sum + String(book.title || "").trim().split(/\s+/).filter(Boolean).length, 0) / history.length;
+
+    stages.growing.score += history.length >= 4 ? 2 : 0;
+    stages.growing.score += recent >= 3 ? 1 : 0;
+    stages.independent.score += history.length >= 10 ? 2 : 0;
+    stages.independent.score += titleWordAverage >= 4.5 ? 1 : 0;
+    stages.early.score += history.length <= 3 ? 1 : 0;
+
+    const ranked = Object.entries(stages).sort((a, b) => b[1].score - a[1].score);
+    const [bestKey, bestStage] = ranked[0];
+    const runnerUp = ranked[1]?.[1]?.score || 0;
+
+    const favoriteAuthors = topValues(history.map((book) => book.author)).filter((entry) => entry.count > 1).slice(0, 2);
+    const signals = [
+      `${history.length} finished book${history.length === 1 ? "" : "s"} tracked for ${insightsKid}.`,
+      `${recent} finished in the last 6 months and ${rated} rated 4 stars or higher.`
+    ];
+    if (favoriteAuthors.length) {
+      signals.push(`Repeat authors: ${formatList(favoriteAuthors.map((entry) => entry.value))}.`);
+    }
+    if (bestKey === "early") {
+      signals.push("History leans toward early-reader and guided-reader signals.");
+    } else if (bestKey === "growing") {
+      signals.push("History leans toward graphic novels and early chapter-book patterns.");
+    } else {
+      signals.push("History leans toward longer-series and middle-grade patterns.");
+    }
+
+    const confidence = history.length >= 6 && bestStage.score - runnerUp >= 2 ? "strong" : history.length >= 3 ? "medium" : "light";
+    const summary = confidence === "strong"
+      ? `${insightsKid} currently looks closest to ${bestStage.label.toLowerCase()}. This is based on repeated patterns in tracked titles, notes, and recent volume.`
+      : `${insightsKid} currently looks closest to ${bestStage.label.toLowerCase()}, but the estimate is still light because the history is small or mixed.`;
+
+    return {
+      key: bestKey,
+      label: bestStage.label,
+      summary,
+      signals
+    };
+  }
+
+  function renderInsightList(node, items, renderItem) {
+    if (!node) return;
+    node.innerHTML = "";
+    items.forEach((item) => {
+      const li = document.createElement("li");
+      li.innerHTML = renderItem(item);
+      node.appendChild(li);
+    });
+  }
+
+  function renderInsightsPanel() {
+    if (!el.insightsLevelBadge || !el.insightsLevelSummary || !el.insightsSignals || !el.insightsRecStatus || !el.insightsRecs) return;
+
+    const history = booksForInsightsKid();
+    const estimate = estimateReadingLevel(history);
+    el.insightsLevelBadge.textContent = estimate.label;
+    el.insightsLevelSummary.textContent = estimate.summary;
+    renderInsightList(el.insightsSignals, estimate.signals, (item) => item);
+
+    const cache = insightsCache[insightsKid];
+    el.insightsRecs.innerHTML = "";
+    if (!history.length) {
+      el.insightsRecStatus.textContent = "Add a few books for this kid first, then open Ideas again for recommendations.";
+      return;
+    }
+    if (!cache || cache.status === "idle") {
+      el.insightsRecStatus.textContent = "Open this panel or press Refresh ideas to fetch recommendations.";
+      return;
+    }
+    if (cache.status === "loading") {
+      el.insightsRecStatus.textContent = "Looking for similar books...";
+      return;
+    }
+    if (cache.status === "error") {
+      el.insightsRecStatus.textContent = cache.message || "Could not load recommendations right now.";
+      return;
+    }
+    if (cache.status === "empty") {
+      el.insightsRecStatus.textContent = cache.message || "No new matches found yet.";
+      return;
+    }
+
+    el.insightsRecStatus.textContent = cache.message || "Based on recent favorites, repeated authors, and nearby categories.";
+    renderInsightList(el.insightsRecs, cache.items, (item) => {
+      const byline = item.authors ? ` by ${item.authors}` : "";
+      const libraryBits = [];
+      if (item.libraries?.irvine) libraryBits.push(`Irvine: ${item.libraries.irvine.label}`);
+      if (item.libraries?.ocpl) libraryBits.push(`OCPL: ${item.libraries.ocpl.label}`);
+      const meta = [item.category, item.source].filter(Boolean).join(" | ");
+      const detail = [meta, libraryBits.join(" | ")].filter(Boolean).join(" | ");
+      return `<strong>${item.title}</strong>${byline}${detail ? `<span>${detail}</span>` : ""}`;
+    });
+  }
+
+  async function fetchInsightQueryItems(query, signal) {
+    let result = await lookupDirectGoogle(query, signal);
+    if (!result.ok || !Array.isArray(result.items) || !result.items.length) {
+      const edge = await lookupViaSupabaseFunction(query, signal);
+      if (edge.ok) result = edge;
+    }
+    return Array.isArray(result.items) ? result.items : [];
+  }
+
+  async function resolveInsightSeedMeta(seedBooks, signal) {
+    const seeds = [];
+    for (const book of seedBooks) {
+      const exact = book.author ? `intitle:"${book.title}" inauthor:"${book.author}"` : `intitle:"${book.title}"`;
+      const items = await fetchInsightQueryItems(exact, signal);
+      const picked = rankLookupItems(items, `${book.title} ${book.author || ""}`)[0];
+      if (picked?.volumeInfo) seeds.push(picked.volumeInfo);
+    }
+    return seeds;
+  }
+
+  function buildInsightQueries(seedMeta, estimate) {
+    const authors = topValues(seedMeta.flatMap((meta) => Array.isArray(meta.authors) ? meta.authors : [])).slice(0, 3).map((entry) => entry.value);
+    const categories = topValues(seedMeta.flatMap((meta) => Array.isArray(meta.categories) ? meta.categories : [])).slice(0, 3).map((entry) => entry.value);
+    const stageQueries = estimate.key === "early"
+      ? ['"I Can Read"', '"Step Into Reading"', 'subject:"Readers (Elementary)"']
+      : estimate.key === "growing"
+        ? ['"Branches" scholastic', 'subject:"Children\'s stories" graphic novel', '"early chapter book" kids']
+        : ['subject:"Juvenile Fiction" fantasy', '"middle grade" adventure', 'subject:"Children\'s stories" series'];
+
+    return uniqueStrings([
+      ...authors.map((author) => `inauthor:"${author}"`),
+      ...categories.map((category) => `subject:"${category}"`),
+      ...stageQueries
+    ]);
+  }
+
+  function rankInsightCandidate(item, context) {
+    const volume = item?.volumeInfo || {};
+    const title = normalizeLookupText(volume.title || "");
+    const authors = Array.isArray(volume.authors) ? volume.authors : [];
+    const categories = Array.isArray(volume.categories) ? volume.categories : [];
+    let score = 0;
+    if (!title || context.readTitles.has(title)) return -999;
+    if ((volume.maturityRating || "").toUpperCase() === "MATURE") return -999;
+    authors.forEach((author) => {
+      if (context.authors.has(author)) score += 4;
+    });
+    categories.forEach((category) => {
+      if (context.categories.has(category)) score += 3;
+    });
+    if (context.estimate.key === "early" && /reader|readers|level|phonics/i.test(`${volume.title || ""} ${(volume.categories || []).join(" ")}`)) score += 3;
+    if (context.estimate.key === "growing" && /graphic|chapter|branches/i.test(`${volume.title || ""} ${(volume.categories || []).join(" ")}`)) score += 3;
+    if (context.estimate.key === "independent" && /fantasy|adventure|juvenile fiction|series/i.test((volume.categories || []).join(" "))) score += 3;
+    return score;
+  }
+
+  async function fetchInsightsRecommendations(signal) {
+    const history = booksForInsightsKid();
+    const estimate = estimateReadingLevel(history);
+    const seedBooks = history
+      .slice()
+      .sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0) || byDateDesc(a, b))
+      .slice(0, 4);
+    const seedMeta = await resolveInsightSeedMeta(seedBooks, signal);
+    const queries = buildInsightQueries(seedMeta, estimate);
+    const context = {
+      estimate,
+      readTitles: new Set(history.map((book) => normalizeLookupText(book.title))),
+      authors: new Set(seedMeta.flatMap((meta) => Array.isArray(meta.authors) ? meta.authors : [])),
+      categories: new Set(seedMeta.flatMap((meta) => Array.isArray(meta.categories) ? meta.categories : []))
+    };
+
+    const picked = {};
+    for (const query of queries) {
+      const items = await fetchInsightQueryItems(query, signal);
+      items.forEach((item) => {
+        const title = normalizeLookupText(item?.volumeInfo?.title || "");
+        if (!title || picked[title]) return;
+        const score = rankInsightCandidate(item, context);
+        if (score < 0) return;
+        picked[title] = { item, score, query };
+      });
+      if (Object.keys(picked).length >= 10) break;
+    }
+
+    const results = Object.values(picked)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6)
+      .map(({ item, query }) => {
+        const volume = item.volumeInfo || {};
+        return {
+          title: volume.title || "Untitled",
+          authors: Array.isArray(volume.authors) ? volume.authors.join(", ") : "",
+          category: Array.isArray(volume.categories) ? volume.categories[0] : "",
+          source: query.startsWith("inauthor:") ? "author match" : query.startsWith("subject:") ? "subject match" : "level match"
+        };
+      });
+
+    return { estimate, items: results };
+  }
+
+
+  async function attachLibraryAvailability(items, signal) {
+    if (!Array.isArray(items) || !items.length) return items;
+    try {
+      const response = await fetch(LOOKUP_FUNCTION_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SUPABASE_ANON_KEY,
+          ...(currentAccessToken ? { Authorization: `Bearer ${currentAccessToken}` } : {})
+        },
+        body: JSON.stringify({
+          mode: "availability",
+          books: items.map((item) => ({ title: item.title, authors: item.authors || "" }))
+        }),
+        signal,
+        cache: "no-store"
+      });
+      if (!response.ok) return items;
+      const payload = await response.json();
+      const lookup = {};
+      (Array.isArray(payload?.items) ? payload.items : []).forEach((entry) => {
+        lookup[normalizeLookupText(entry?.title || "")] = entry?.libraries || {};
+      });
+      return items.map((item) => ({
+        ...item,
+        libraries: lookup[normalizeLookupText(item.title)] || null
+      }));
+    } catch {
+      return items;
+    }
+  }
+  async function ensureInsightsRecommendations(force) {
+    if (!insightsKid) return;
+    const history = booksForInsightsKid();
+    if (!history.length) {
+      insightsCache[insightsKid] = { status: "empty", items: [], message: "Add a few books for this kid first, then refresh ideas." };
+      renderInsightsPanel();
+      return;
+    }
+    if (!force && insightsCache[insightsKid]?.status === "ready") {
+      renderInsightsPanel();
+      return;
+    }
+
+    if (insightsAbortController) insightsAbortController.abort();
+    insightsAbortController = new AbortController();
+    insightsRequestId += 1;
+    const requestId = insightsRequestId;
+    insightsCache[insightsKid] = { status: "loading", items: [], message: "Looking for similar books..." };
+    renderInsightsPanel();
+
+    try {
+      const result = await fetchInsightsRecommendations(insightsAbortController.signal);
+      result.items = await attachLibraryAvailability(result.items, insightsAbortController.signal);
+      if (requestId !== insightsRequestId) return;
+      insightsCache[insightsKid] = result.items.length
+        ? { status: "ready", items: result.items, message: `Suggestions tuned for ${result.estimate.label.toLowerCase()} patterns.` }
+        : { status: "empty", items: [], message: "No fresh matches found from the current history." };
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      if (requestId !== insightsRequestId) return;
+      insightsCache[insightsKid] = { status: "error", items: [], message: "Could not load recommendation ideas right now." };
+    }
+    renderInsightsPanel();
+  }
   function renderChart(arr) {
     const months = [];
     const base = new Date();
@@ -569,7 +938,8 @@
       el.title.removeAttribute("aria-activedescendant");
     }
   }
-
+
+
   function normalizeLookupText(value) {
     return String(value || "")
       .toLowerCase()
@@ -676,7 +1046,8 @@
     if (title.startsWith(queryTokens[0])) score += 2;
     return score + titleHits;
   }
-
+
+
   function matchCountInTitle(item, sigTokens) {
     const volume = item?.volumeInfo || {};
     const title = normalizeLookupText([volume.title, volume.subtitle].filter(Boolean).join(" "));
@@ -956,6 +1327,7 @@
     el.kid.value = kids.includes(currentKid) ? currentKid : kids[0];
 
     const base = tabBooks();
+    syncInsightsKid(kids);
     const years = yearsFor(base);
     const prevYear = filterState.year;
     el.year.innerHTML = `<option value="All">All</option>${years.map((y) => `<option value="${y}">${y}</option>`).join("")}`;
@@ -970,6 +1342,8 @@
     el.shelf.innerHTML = "";
     el.list.classList.toggle("hidden", activeView !== "list");
     el.shelf.classList.toggle("hidden", activeView !== "shelf");
+
+    renderInsightsPanel();
 
     if (!visible.length) {
       const txt = activeTab === "All" ? "No books match this view." : `No books match this view for ${activeTab}.`;
@@ -1330,23 +1704,13 @@
         }
       });
     }
-    if (el.navAdd) {
-      el.navAdd.addEventListener("click", () => {
-        setActiveSection("add");
+    [el.navAdd, el.navSearch, el.navExport, el.navInsights].forEach((btn) => {
+      if (!btn) return;
+      btn.addEventListener("click", () => {
+        setActiveSection(btn.dataset.section || "books");
       });
-    }
+    });
 
-    if (el.navSearch) {
-      el.navSearch.addEventListener("click", () => {
-        setActiveSection("search");
-      });
-    }
-
-    if (el.navExport) {
-      el.navExport.addEventListener("click", () => {
-        setActiveSection("export");
-      });
-    }
     el.title.addEventListener("input", scheduleTitleLookup);
     el.title.addEventListener("keydown", onTitleKeyDown);
     el.title.addEventListener("blur", () => {
@@ -1423,6 +1787,18 @@
     });
 
     el.search.addEventListener("input", () => { filterState.search = el.search.value.trim().toLowerCase(); render(); });
+    if (el.insightsKid) {
+      el.insightsKid.addEventListener("change", () => {
+        insightsKid = el.insightsKid.value;
+        renderInsightsPanel();
+        if (activeSection === "insights") void ensureInsightsRecommendations(false);
+      });
+    }
+    if (el.insightsRefresh) {
+      el.insightsRefresh.addEventListener("click", () => {
+        void ensureInsightsRecommendations(true);
+      });
+    }
     el.year.addEventListener("change", () => { filterState.year = el.year.value; render(); });
     el.ratingFilter.addEventListener("change", () => { filterState.rating = el.ratingFilter.value; render(); });
 
@@ -1514,6 +1890,13 @@
   }
   void init();
 })();
+
+
+
+
+
+
+
 
 
 

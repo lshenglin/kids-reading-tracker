@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Kids Reading Tracker</title>
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./styles.css?v=20260310c">
 </head>
 <body>
   <header class="site-header">
@@ -19,9 +19,10 @@
         <button type="button" id="auth-signout-header" class="secondary">Sign Out</button>
       </div>
       <div id="nav-card" class="section-nav hidden" role="group" aria-label="Sections">
-        <button type="button" id="nav-add" class="secondary" aria-pressed="false">add</button>
-        <button type="button" id="nav-search" class="secondary" aria-pressed="false">search</button>
-        <button type="button" id="nav-export" class="secondary" aria-pressed="false">export</button>
+        <button type="button" id="nav-add" class="secondary" data-section="add" aria-pressed="false">add</button>
+        <button type="button" id="nav-search" class="secondary" data-section="search" aria-pressed="false">search</button>
+        <button type="button" id="nav-export" class="secondary" data-section="export" aria-pressed="false">export</button>
+        <button type="button" id="nav-insights" class="secondary icon-nav" data-section="insights" aria-pressed="false" title="Ideas">ideas</button>
       </div>
     </div>
   </header>
@@ -148,6 +149,37 @@
         <input id="import-file" type="file" accept="application/json,.json" class="hidden" aria-hidden="true">
       </div>
     </section>
+
+    <section class="card requires-auth hidden" id="insights-card">
+      <div class="insights-header">
+        <div>
+          <h2>Ideas</h2>
+          <p class="insights-intro">Estimate where a kid is reading now and surface nearby books to explore next.</p>
+        </div>
+        <div class="field insights-kid-field">
+          <label for="insights-kid">Kid</label>
+          <select id="insights-kid"></select>
+        </div>
+      </div>
+
+      <div id="insights-panel" class="insights-panel" aria-live="polite">
+        <section class="insight-block">
+          <h3>Estimated Reading Level</h3>
+          <p id="insights-level-badge" class="insights-level-badge">Waiting for history</p>
+          <p id="insights-level-summary" class="insights-copy">Select a kid with some finished books to generate an estimate.</p>
+          <ul id="insights-signals" class="insights-list"></ul>
+        </section>
+
+        <section class="insight-block">
+          <div class="insight-block-head">
+            <h3>Books To Explore</h3>
+            <button type="button" id="insights-refresh" class="secondary">Refresh ideas</button>
+          </div>
+          <p id="insights-rec-status" class="insights-copy">Recommendations will appear here.</p>
+          <ul id="insights-recs" class="insights-list"></ul>
+        </section>
+      </div>
+    </section>
   </main>
 
   <div id="book-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -165,6 +197,11 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./app.js"></script>
+  <script src="./app.js?v=20260310c"></script>
 </body>
 </html>
+
+
+
+
+

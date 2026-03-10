@@ -1,10 +1,18 @@
-﻿import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS"
 };
+
+const OCPL_SEARCH_BASE = "https://catalog.ocpl.org/client/en_US/default/search/results?qu=";
+const IRVINE_SEARCH_BASES = [
+  "https://catalog.irvinepubliclibrary.org/client/en_US/default/search/results?qu=",
+  "https://irvinepubliclibrary.ent.sirsi.net/client/en_US/default/search/results?qu=",
+  "https://catalog.cityofirvine.org/client/en_US/default/search/results?qu=",
+  "https://cityofirvine.org/node/90045?keys="
+];
 
 function jsonResponse(status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -15,6 +23,106 @@ function jsonResponse(status: number, body: unknown) {
       "Cache-Control": "no-store"
     }
   });
+}
+
+function normalizeText(value: string) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function htmlToText(html: string) {
+  return normalizeText(
+    String(html || "")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/\s+/g, " ")
+  );
+}
+
+async function fetchText(url: string) {
+  try {
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: {
+        "user-agent": "Mozilla/5.0 Codex Kids Reading Tracker"
+      }
+    });
+    if (!response.ok) {
+      return { ok: false, text: "", status: response.status };
+    }
+    return { ok: true, text: await response.text(), status: response.status };
+  } catch {
+    return { ok: false, text: "", status: 0 };
+  }
+}
+
+function looksLikeMatch(text: string, title: string, author = "") {
+  const normalizedTitle = normalizeText(title);
+  if (!normalizedTitle) return false;
+  if (!text.includes(normalizedTitle)) return false;
+  const normalizedAuthor = normalizeText(author);
+  return !normalizedAuthor || text.includes(normalizedAuthor) || normalizedAuthor.split(" ").some((token) => token.length > 2 && text.includes(token));
+}
+
+async function checkCatalog(baseUrl: string, title: string, author = "") {
+  const query = author ? `${title} ${author}` : title;
+  const url = `${baseUrl}${encodeURIComponent(query)}`;
+  const result = await fetchText(url);
+
+  if (!result.ok) {
+    return { status: "unknown", label: "Unable to check", url };
+  }
+
+  const text = htmlToText(result.text);
+  if (looksLikeMatch(text, title, author)) {
+    return { status: "has_it", label: "Has it", url };
+  }
+
+  return { status: "not_found", label: "No match found", url };
+}
+
+async function checkIrvineAvailability(title: string, author = "") {
+  let hadReachableCatalog = false;
+  for (const baseUrl of IRVINE_SEARCH_BASES) {
+    const result = await checkCatalog(baseUrl, title, author);
+    if (result.status === "has_it") return result;
+    if (result.status === "not_found") hadReachableCatalog = true;
+  }
+
+  return hadReachableCatalog
+    ? { status: "not_found", label: "No match found", url: `${IRVINE_SEARCH_BASES[0]}${encodeURIComponent(title)}` }
+    : { status: "unknown", label: "Unable to check", url: `${IRVINE_SEARCH_BASES[0]}${encodeURIComponent(title)}` };
+}
+
+async function checkLibraryAvailability(books: Array<{ title?: string; authors?: string }>) {
+  const items = [];
+  for (const book of books.slice(0, 8)) {
+    const title = String(book?.title || "").trim();
+    const authors = String(book?.authors || "").trim();
+    if (!title) continue;
+
+    const [ocpl, irvine] = await Promise.all([
+      checkCatalog(OCPL_SEARCH_BASE, title, authors),
+      checkIrvineAvailability(title, authors)
+    ]);
+
+    items.push({
+      title,
+      authors,
+      libraries: {
+        irvine,
+        ocpl
+      }
+    });
+  }
+  return items;
 }
 
 async function searchGoogleBooks(query: string, maxResults: number) {
@@ -109,6 +217,14 @@ serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
+    const mode = String(body?.mode || "lookup").trim();
+
+    if (mode === "availability") {
+      const books = Array.isArray(body?.books) ? body.books : [];
+      const items = await checkLibraryAvailability(books);
+      return jsonResponse(200, { items, source: "libraries" });
+    }
+
     const query = String(body?.query || "").trim();
     const maxResultsRaw = Number(body?.maxResults);
     const maxResults = Number.isFinite(maxResultsRaw)
